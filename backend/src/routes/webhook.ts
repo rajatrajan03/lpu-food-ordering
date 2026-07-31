@@ -22,6 +22,7 @@ webhookRouter.get("/", (req, res) => {
 // on repeated slow/failed responses, so we ack first and reply asynchronously.
 webhookRouter.post("/", (req, res) => {
   res.sendStatus(200);
+  console.log("Webhook POST received:", JSON.stringify(req.body).slice(0, 500));
 
   const entry = req.body?.entry?.[0];
   const change = entry?.changes?.[0]?.value;
