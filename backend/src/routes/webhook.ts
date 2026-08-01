@@ -32,7 +32,11 @@ webhookRouter.post("/", (req, res) => {
   const from = message.from as string;
   const text = message.text?.body as string;
 
+  console.log("Processing message from", from, ":", text);
   handleIncomingMessage(from, text)
-    .then((reply) => sendWhatsAppText(from, reply))
+    .then((reply) => {
+      console.log("Got reply from conversation engine, length:", reply?.length);
+      return sendWhatsAppText(from, reply);
+    })
     .catch((err) => console.error("Failed to handle WhatsApp message:", err));
 });
