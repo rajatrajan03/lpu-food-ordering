@@ -43,6 +43,14 @@ function isToolUseFailedError(err: unknown): boolean {
   return code === "tool_use_failed";
 }
 
+/** Groq free-tier tokens/requests-per-minute cap — worth a distinct, friendlier
+ * reply since "something went wrong" reads like a real bug, not "try again shortly." */
+function isRateLimitError(err: unknown): boolean {
+  const status = (err as { status?: number })?.status;
+  const code = (err as { error?: { error?: { code?: string } } })?.error?.error?.code;
+  return status === 429 || status === 413 || code === "rate_limit_exceeded";
+}
+
 /**
  * Groq's Llama tool-calling occasionally emits a malformed pseudo-call
  * (e.g. `<function=...>`) instead of a real tool_calls response, which the
@@ -238,6 +246,9 @@ export async function handleIncomingMessage(whatsappNumber: string, text: string
     }
   } catch (err) {
     console.error("Conversation engine error:", err);
+    if (isRateLimitError(err)) {
+      finalReply = "I'm getting a lot of requests right now — give me about a minute and try again 🙏";
+    }
   }
 
   // Only the short final exchange is kept long-term — real ids for next turn
