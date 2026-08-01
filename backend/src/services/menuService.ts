@@ -7,7 +7,10 @@ export async function searchMenu(params: {
   vegOnly?: boolean;
   limit?: number;
 }) {
-  const { query, stallId, categoryName, vegOnly, limit = 15 } = params;
+  // A WhatsApp reply listing every match gets long fast — 8 keeps the AI's
+  // formatted response (and its footprint in conversation history) small
+  // enough to not blow Groq's free-tier tokens-per-minute budget on the next turn.
+  const { query, stallId, categoryName, vegOnly, limit = 8 } = params;
 
   return prisma.menuItem.findMany({
     where: {

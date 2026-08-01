@@ -11,13 +11,20 @@ Rules:
 - A cart can only contain items from one stall. If the student wants a different stall mid-cart, tell them clearly they'll need to check out or clear the current cart first.
 - Always show prices when listing items or the cart.
 - Before calling place_order, make sure the student has confirmed both the cart contents and the pickup slot.
-- Keep replies short and conversational — this is a chat, not a report.
+- Keep replies short and conversational — this is a chat, not a report. Never use markdown tables (WhatsApp renders them as raw "|" characters, not a table) — use a short numbered list instead, and if a search returns many results, mention only the best 4-5 and say there are more if the student wants to narrow it down.
 - A "Known references" block may follow with name -> id lookups from earlier in this conversation. Use those ids directly instead of calling a tool again for something you already looked up — but never invent an id that isn't listed there or in a tool result.`;
 
 // Kept deliberately small — Groq's free tier caps at 12k tokens/minute, and
 // this history is resent on every single turn.
 const MAX_TOOL_ITERATIONS = 5;
 const MAX_HISTORY_MESSAGES = 10;
+const MAX_HISTORY_MESSAGE_CHARS = 400;
+
+function truncateForHistory(text: string): string {
+  return text.length > MAX_HISTORY_MESSAGE_CHARS
+    ? text.slice(0, MAX_HISTORY_MESSAGE_CHARS) + "…"
+    : text;
+}
 
 function getSessionState(raw: unknown): SessionState {
   if (!raw || typeof raw !== "object") return emptySessionState();
@@ -235,10 +242,13 @@ export async function handleIncomingMessage(whatsappNumber: string, text: string
 
   // Only the short final exchange is kept long-term — real ids for next turn
   // come from knownStalls/knownItems above, not from replaying tool results.
+  // Hard length cap is a safety net independent of the "keep replies short"
+  // prompt instruction — one unusually long reply (e.g. a big search result
+  // list) shouldn't be able to blow the token budget for the next several turns.
   session.recentMessages = [
     ...session.recentMessages,
-    { role: "user" as const, content: text },
-    { role: "assistant" as const, content: finalReply },
+    { role: "user" as const, content: truncateForHistory(text) },
+    { role: "assistant" as const, content: truncateForHistory(finalReply) },
   ].slice(-MAX_HISTORY_MESSAGES);
 
   await prisma.student.update({
