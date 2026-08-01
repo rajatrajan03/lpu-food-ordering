@@ -4,15 +4,23 @@ import { toolDefinitions, emptySessionState, rememberNames, type SessionState, t
 import { prisma } from "../lib/prisma";
 import * as menuService from "../services/menuService";
 import * as orderService from "../services/orderService";
+import { sendWhatsAppButtons } from "../whatsapp/client";
+
+const GREETING_PATTERN = /^(hi+|hello+|hey+|hlo|yo|start|menu)\b/i;
+const GREETING_TEXT =
+  "Hi! 👋 I'm the LPU Food ordering assistant. Just tell me what you're craving, or tap an option below.";
 
 const SYSTEM_PROMPT = `You are the ordering assistant for LPU campus food stalls, talking to a student over WhatsApp.
 Rules:
 - Never invent menu items, prices, availability, or stall names — always call a tool to look them up.
 - A cart can only contain items from one stall. If the student wants a different stall mid-cart, tell them clearly they'll need to check out or clear the current cart first.
 - Always show prices when listing items or the cart.
-- Before calling place_order, make sure the student has confirmed both the cart contents and the pickup slot.
+- Before calling place_order, always show a clear order summary first — items with quantities, unit prices, total, and the picked pickup slot time — and wait for an explicit yes/confirm from the student. Never call place_order on the same turn you first show the summary.
+- After place_order succeeds, confirm with the order id (short form is fine), the pickup slot time, and the total — and mention you'll notify them here as the stall updates the order.
+- If a search returns nothing, or an item/variant/slot turns out unavailable, don't just say "not available" — proactively suggest a close alternative using another tool call (e.g. a broader search_menu query, a different stall, or the next open pickup slot) before asking the student what they'd like instead.
 - Keep replies short and conversational — this is a chat, not a report. Never use markdown tables (WhatsApp renders them as raw "|" characters, not a table) — use a short numbered list instead, and if a search returns many results, mention only the best 4-5 and say there are more if the student wants to narrow it down.
-- A "Known references" block may follow with name -> id lookups from earlier in this conversation. Use those ids directly instead of calling a tool again for something you already looked up — but never invent an id that isn't listed there or in a tool result.`;
+- A "Known references" block may follow with name -> id lookups from earlier in this conversation. Use those ids directly instead of calling a tool again for something you already looked up — but never invent an id that isn't listed there or in a tool result. This also covers references like "the first one" or "that one" — resolve them from what you just listed, don't ask the student to repeat themselves.
+- You only have student-facing tools. Never claim to change stall settings, menus, or other students' orders — that's outside what you can do here.`;
 
 // Kept deliberately small — Groq's free tier caps at 12k tokens/minute, and
 // this history is resent on every single turn.
@@ -204,10 +212,31 @@ async function executeTool(
   }
 }
 
-/** Runs one WhatsApp message through the model + tool loop and returns the reply text. */
-export async function handleIncomingMessage(whatsappNumber: string, text: string): Promise<string> {
+/**
+ * Runs one WhatsApp message through the model + tool loop and returns the reply text.
+ * Returns null when the reply was already sent directly (e.g. the greeting's quick-reply
+ * buttons) — the caller should not send anything further for that turn.
+ */
+export async function handleIncomingMessage(whatsappNumber: string, text: string): Promise<string | null> {
   const student = await findOrCreateStudent(whatsappNumber);
   const session = getSessionState(student.sessionState);
+
+  if (session.recentMessages.length === 0 && GREETING_PATTERN.test(text.trim())) {
+    await sendWhatsAppButtons(whatsappNumber, GREETING_TEXT, [
+      { id: "browse_stalls", title: "Browse stalls" },
+      { id: "track_order", title: "Track my order" },
+      { id: "help", title: "Help" },
+    ]);
+    session.recentMessages = [
+      { role: "user" as const, content: truncateForHistory(text) },
+      { role: "assistant" as const, content: GREETING_TEXT },
+    ];
+    await prisma.student.update({
+      where: { id: student.id },
+      data: { sessionState: session as unknown as object },
+    });
+    return null;
+  }
 
   const knownRefs = knownReferencesMessage(session);
   const messages: Groq.Chat.Completions.ChatCompletionMessageParam[] = [

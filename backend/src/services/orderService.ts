@@ -1,7 +1,30 @@
 import { prisma } from "../lib/prisma";
 import { OrderStatus } from "@prisma/client";
+import { sendWhatsAppText } from "../whatsapp/client";
 
 export class OrderError extends Error {}
+
+const STATUS_MESSAGES: Partial<Record<OrderStatus, (stallName: string) => string>> = {
+  accepted: (stall) => `Your order at ${stall} has been accepted ✅ We'll let you know once it's being prepared.`,
+  rejected: (stall) => `Sorry, ${stall} wasn't able to accept your order. Your pickup slot has been released — feel free to try another stall or time.`,
+  preparing: (stall) => `${stall} has started preparing your order 🍳`,
+  ready: (stall) => `Your order at ${stall} is ready for pickup 🎉`,
+};
+
+/** Fire-and-forget — a notification failure shouldn't fail the status transition itself. */
+function notifyStudentOfStatus(order: { studentId: string; status: OrderStatus; stallId: string }) {
+  const compose = STATUS_MESSAGES[order.status];
+  if (!compose) return;
+  prisma.student
+    .findUnique({ where: { id: order.studentId } })
+    .then(async (student) => {
+      if (!student) return;
+      const stall = await prisma.stall.findUnique({ where: { id: order.stallId } });
+      if (!stall) return;
+      await sendWhatsAppText(student.whatsappNumber, compose(stall.name));
+    })
+    .catch((err) => console.error("Failed to send order status WhatsApp notification:", err));
+}
 
 const CANCELLABLE_STATUSES: OrderStatus[] = ["placed", "accepted"];
 
@@ -134,6 +157,9 @@ export async function transitionOrderStatus(
       });
     }
     return tx.order.update({ where: { id: orderId }, data: { status: nextStatus } });
+  }).then((order) => {
+    notifyStudentOfStatus(order);
+    return order;
   });
 }
 

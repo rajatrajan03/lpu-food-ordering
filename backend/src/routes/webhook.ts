@@ -27,14 +27,24 @@ webhookRouter.post("/", (req, res) => {
   const entry = req.body?.entry?.[0];
   const change = entry?.changes?.[0]?.value;
   const message = change?.messages?.[0];
-  if (!message || message.type !== "text") return;
+  if (!message) return;
 
   const from = message.from as string;
-  const text = message.text?.body as string;
+  // A tapped quick-reply button arrives as its own message type, not "text" —
+  // feed the button's label through as if the student had typed it, so the
+  // existing natural-language tool loop handles it the same way either path.
+  let text: string | undefined;
+  if (message.type === "text") {
+    text = message.text?.body as string;
+  } else if (message.type === "interactive" && message.interactive?.button_reply) {
+    text = message.interactive.button_reply.title as string;
+  }
+  if (!text) return;
 
   console.log("Processing message from", from, ":", text);
   handleIncomingMessage(from, text)
     .then((reply) => {
+      if (reply === null) return; // engine already sent a reply directly (e.g. greeting buttons)
       console.log("Got reply from conversation engine, length:", reply?.length);
       return sendWhatsAppText(from, reply);
     })
