@@ -6,11 +6,12 @@ export async function searchMenu(params: {
   categoryName?: string;
   vegOnly?: boolean;
   limit?: number;
+  offset?: number;
 }) {
   // A WhatsApp reply listing every match gets long fast — 8 keeps the AI's
   // formatted response (and its footprint in conversation history) small
   // enough to not blow Groq's free-tier tokens-per-minute budget on the next turn.
-  const { query, stallId, categoryName, vegOnly, limit = 8 } = params;
+  const { query, stallId, categoryName, vegOnly, limit = 8, offset = 0 } = params;
 
   return prisma.menuItem.findMany({
     where: {
@@ -32,6 +33,10 @@ export async function searchMenu(params: {
         : {}),
     },
     include: { variants: { where: { available: true } }, stall: true, category: true },
+    // Deterministic order so `offset` reliably returns a fresh batch instead
+    // of a database-default order that may repeat or shuffle between calls.
+    orderBy: { id: "asc" },
+    skip: offset,
     take: limit,
   });
 }

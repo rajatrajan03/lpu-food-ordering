@@ -13,6 +13,8 @@ const GREETING_TEXT =
 const SYSTEM_PROMPT = `You are the ordering assistant for LPU campus food stalls, talking to a student over WhatsApp.
 Rules:
 - Never invent menu items, prices, availability, or stall names — always call a tool to look them up.
+- When the student names a food or craving (e.g. "icecream", "burger"), always pass that word as search_menu's query field — even if it also happens to match a stall's name. A craving means "find me that food", not "show me everything this stall sells." Only skip the query field and browse a stall's full menu when the student explicitly asks to see a stall's menu.
+- If the student says "different", "something else", "other options", or similar after you've already shown a list, NEVER show the same items again — call search_menu again with the exact same query/stall_id/etc. plus the offset field set to how many items you already showed, so they see a new batch. If that comes back empty, say so plainly instead of repeating the old list.
 - A cart can only contain items from one stall. If the student wants a different stall mid-cart, tell them clearly they'll need to check out or clear the current cart first.
 - Always show prices when listing items or the cart.
 - Before calling place_order, always show a clear order summary first — items with quantities, unit prices, total, and the picked pickup slot time — and wait for an explicit yes/confirm from the student. Never call place_order on the same turn you first show the summary.
@@ -124,6 +126,7 @@ async function executeTool(
         stallId: (args.stall_id as string | undefined) ?? session.activeStallId,
         categoryName: args.category as string | undefined,
         vegOnly: args.veg_only as boolean | undefined,
+        offset: (args.offset as number | undefined) ?? 0,
       });
       session.knownItems = rememberNames(session.knownItems, items.map((i) => [i.name, i.id]));
       session.knownStalls = rememberNames(session.knownStalls, items.map((i) => [i.stall.name, i.stallId]));

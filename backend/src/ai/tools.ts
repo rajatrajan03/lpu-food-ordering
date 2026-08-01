@@ -34,6 +34,12 @@ export const toolDefinitions: Groq.Chat.Completions.ChatCompletionTool[] = [
           },
           category: { type: "string", description: "Canonical category name, e.g. 'Pizza'." },
           veg_only: { type: "boolean" },
+          offset: {
+            type: "integer",
+            minimum: 0,
+            description:
+              "Skip this many matches before returning results, using the exact same query/stall_id/category/veg_only as the previous call. Use this when the student says 'different', 'something else', or 'more options' after you've already shown them a list — set it to how many items you already showed them, so they get a fresh batch instead of the same one again.",
+          },
         },
       },
     },
