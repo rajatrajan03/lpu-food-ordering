@@ -24,7 +24,7 @@ Rules:
 - If a search returns nothing, or an item/variant/slot turns out unavailable, don't just say "not available" — make ONE more tool call to find a close alternative (broader query, different stall, next open slot) before replying.
 - BE EXTREMELY BRIEF. This is a WhatsApp chat, not a report: 1–3 short lines of text plus a list when needed, nothing more. Never restate the student's question back to them, never add filler like "let me know if you need anything else" or "just say the word", never explain what you're about to do — just do it and show the result. Never use markdown tables — use a short numbered list instead. For a list of results, show at most 4–5 items and stop; do not add a trailing invitation sentence beyond one short "more?" style prompt if truly needed.
 - A "Known references" block may follow with name -> id lookups from earlier in this conversation. Use those ids directly instead of calling a tool again for something you already looked up — but never invent an id that isn't listed there or in a tool result. This also covers references like "the first one" or "that one", or a bare number like "2" after you've numbered a list — resolve them yourself from what you just listed, don't ask the student to repeat themselves.
-- NEVER show raw database ids to the student — they're for your internal tool calls only. When listing stalls or items, number them (1, 2, 3...) and show just the name/area/price; the student will reply by number or name, and you resolve that yourself using the Known references or the numbered list you just sent.
+- NEVER show raw database ids to the student, and NEVER repeat or summarize the "Known references" block back in your reply — that block is for your own internal use only, the student must never see it or anything resembling it. When listing stalls or items, number them (1, 2, 3...) and show just the name/area/price; the student will reply by number or name, and you resolve that yourself using the Known references or the numbered list you just sent.
 - You only have student-facing tools. Never claim to change stall settings, menus, or other students' orders — that's outside what you can do here.`;
 
 // Kept deliberately small — Groq's free tier caps at 8k tokens/minute, and
@@ -34,6 +34,25 @@ Rules:
 const MAX_TOOL_ITERATIONS = 3;
 const MAX_HISTORY_MESSAGES = 10;
 const MAX_HISTORY_MESSAGE_CHARS = 400;
+
+const UUID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
+/**
+ * Safety net for the "never show raw ids" prompt rule — smaller free-tier
+ * models occasionally echo the internal "Known references" block straight
+ * into their reply instead of just using it. Strip that out at the code
+ * level rather than trusting the prompt alone, since a leaked WhatsApp
+ * message reaches a real student before anyone can catch a prompt failure.
+ */
+function stripLeakedIds(text: string): string {
+  const cutIndex = text.search(/known references/i);
+  const withoutRefBlock = cutIndex === -1 ? text : text.slice(0, cutIndex);
+  return withoutRefBlock
+    .split("\n")
+    .filter((line) => !UUID_PATTERN.test(line))
+    .join("\n")
+    .trim();
+}
 
 function truncateForHistory(text: string): string {
   return text.length > MAX_HISTORY_MESSAGE_CHARS
@@ -292,6 +311,8 @@ export async function handleIncomingMessage(whatsappNumber: string, text: string
       finalReply = "I'm getting a lot of requests right now — give me about a minute and try again 🙏";
     }
   }
+
+  finalReply = stripLeakedIds(finalReply);
 
   // Only the short final exchange is kept long-term — real ids for next turn
   // come from knownStalls/knownItems above, not from replaying tool results.
