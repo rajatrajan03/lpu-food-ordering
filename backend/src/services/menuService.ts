@@ -78,13 +78,29 @@ export async function listStalls(
   });
 }
 
-/** Upcoming bookable slots for a stall, soonest first, excluding full ones. */
-export async function getAvailablePickupSlots(stallId: string, fromDate = new Date()) {
+/**
+ * Upcoming bookable slots for a stall, excluding full ones. Without a
+ * preference, soonest first. With `preferredMinutes` (minutes since
+ * midnight, e.g. 18*60 for 6 PM), sorted by closeness to that time of day
+ * instead — so "around 6pm" surfaces nearby slots rather than the whole
+ * day's list starting from whenever the stall opens.
+ */
+export async function getAvailablePickupSlots(
+  stallId: string,
+  options: { fromDate?: Date; preferredMinutes?: number } = {},
+) {
+  const { fromDate = new Date(), preferredMinutes } = options;
   const slots = await prisma.pickupSlot.findMany({
     where: { stallId, slotDate: { gte: fromDate } },
     orderBy: [{ slotDate: "asc" }, { startTime: "asc" }],
     take: 50,
   });
-  // Prisma can't compare two columns in `where`, so the capacity filter runs here.
-  return slots.filter((s) => s.bookedCount < s.maxCapacity).slice(0, 20);
+  const available = slots.filter((s) => s.bookedCount < s.maxCapacity);
+
+  if (preferredMinutes === undefined) return available.slice(0, 20);
+
+  const minutesOf = (t: Date) => t.getUTCHours() * 60 + t.getUTCMinutes();
+  return [...available]
+    .sort((a, b) => Math.abs(minutesOf(a.startTime) - preferredMinutes) - Math.abs(minutesOf(b.startTime) - preferredMinutes))
+    .slice(0, 6);
 }

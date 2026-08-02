@@ -178,6 +178,16 @@ export async function getActiveOrdersForStudent(studentId: string) {
   });
 }
 
+/** Full order history (any status), most recent first — powers "show my past orders" and "repeat my last order". */
+export async function getOrderHistoryForStudent(studentId: string, limit = 10) {
+  return prisma.order.findMany({
+    where: { studentId },
+    include: { items: true, stall: true },
+    orderBy: { placedAt: "desc" },
+    take: limit,
+  });
+}
+
 export async function getOrderQueueForStall(stallId: string) {
   return prisma.order.findMany({
     where: { stallId, status: { notIn: ["completed", "cancelled", "rejected"] } },

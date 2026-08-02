@@ -39,6 +39,8 @@ Rules:
 - Before calling place_order, show a one-line order summary (items, total, slot time) and wait for an explicit yes. Never call place_order on the same turn you first show the summary.
 - After place_order succeeds, confirm with the order id (short form), slot time, and total in one short line.
 - If a search returns nothing, or an item/variant/slot turns out unavailable, don't just say "not available" — make ONE more tool call to find a close alternative (broader query, different stall, next open slot) before replying.
+- When the student names a specific pickup time, pass it as get_pickup_slots' preferred_time (24-hour HH:MM). If the nearest available slot is still far from what they asked (e.g. they said 6pm and the closest is 1pm), say plainly that nothing's available near that time and show what's closest instead — don't just dump the full day's slots as if that's what they asked for.
+- "My order history" / "my past orders" -> call get_order_history. "Repeat my last order" / "same as last time" -> call repeat_last_order directly (don't manually look up and re-add items one by one) — it fills the cart from their most recent order and tells you if anything from it is no longer available, which you should mention.
 - BE EXTREMELY BRIEF. This is a WhatsApp chat, not a report: 1–3 short lines of text plus a list when needed, nothing more. Never restate the student's question back to them, never add filler like "let me know if you need anything else" or "just say the word", never explain what you're about to do — just do it and show the result. Never use markdown tables — use a short numbered list instead. For a list of results, show at most 4–5 items and stop; do not add a trailing invitation sentence beyond one short "more?" style prompt if truly needed.
 - A "Known references" block may follow with name -> id lookups from earlier in this conversation. Use those ids directly instead of calling a tool again for something you already looked up — but never invent an id that isn't listed there or in a tool result. This also covers references like "the first one" or "that one", or a bare number like "2" after you've numbered a list — resolve them yourself from what you just listed, don't ask the student to repeat themselves.
 - NEVER show raw database ids to the student, and NEVER repeat or summarize the "Known references" block back in your reply — that block is for your own internal use only, the student must never see it or anything resembling it. When listing stalls or items, number them (1, 2, 3...) and show just the name/area/price; the student will reply by number or name, and you resolve that yourself using the Known references or the numbered list you just sent.
@@ -238,7 +240,10 @@ async function executeTool(
 
     case "get_pickup_slots": {
       if (!session.activeStallId) return { error: "Add something to the cart first." };
-      const slots = await menuService.getAvailablePickupSlots(session.activeStallId);
+      const preferredTime = args.preferred_time as string | undefined;
+      const match = preferredTime?.match(/^(\d{1,2}):(\d{2})$/);
+      const preferredMinutes = match ? Number(match[1]) * 60 + Number(match[2]) : undefined;
+      const slots = await menuService.getAvailablePickupSlots(session.activeStallId, { preferredMinutes });
       const labeled = slots.map((s) => ({
         id: s.id,
         time: `${formatSlotTime(s.startTime)} – ${formatSlotTime(s.endTime)}`,
@@ -276,6 +281,68 @@ async function executeTool(
       } catch (err) {
         return { error: err instanceof orderService.OrderError ? err.message : "Could not cancel the order." };
       }
+
+    case "get_order_history": {
+      const orders = await orderService.getOrderHistoryForStudent(studentId);
+      session.knownStalls = rememberNames(session.knownStalls, orders.map((o) => [o.stall.name, o.stallId]));
+      return {
+        orders: orders.map((o) => ({
+          id: o.id,
+          status: o.status,
+          stall: o.stall.name,
+          placedAt: o.placedAt,
+          total: Number(o.totalAmount),
+          items: o.items.map((i) => `${i.quantity}x ${i.itemNameSnapshot}`),
+        })),
+      };
+    }
+
+    case "repeat_last_order": {
+      const [lastOrder] = await orderService.getOrderHistoryForStudent(studentId, 1);
+      if (!lastOrder) return { error: "No past orders to repeat." };
+
+      const menuItems = await prisma.menuItem.findMany({
+        where: { id: { in: lastOrder.items.map((i) => i.menuItemId) } },
+        include: { variants: true },
+      });
+      const byId = new Map(menuItems.map((m) => [m.id, m]));
+
+      const newCart: CartLine[] = [];
+      const skipped: string[] = [];
+      for (const line of lastOrder.items) {
+        const item = byId.get(line.menuItemId);
+        if (!item || !item.available) {
+          skipped.push(line.itemNameSnapshot);
+          continue;
+        }
+        let unitPrice = Number(item.basePrice);
+        let variantLabel: string | undefined;
+        if (line.variantId) {
+          const variant = item.variants.find((v) => v.id === line.variantId && v.available);
+          if (!variant) {
+            skipped.push(line.itemNameSnapshot);
+            continue;
+          }
+          unitPrice = Number(variant.price);
+          variantLabel = variant.label;
+        }
+        newCart.push({
+          itemId: item.id,
+          itemName: item.name,
+          variantId: line.variantId ?? undefined,
+          variantLabel,
+          unitPrice,
+          quantity: line.quantity,
+        });
+      }
+
+      if (newCart.length === 0) return { error: "None of the items from that order are available anymore." };
+
+      session.cart = newCart;
+      session.activeStallId = lastOrder.stallId;
+      session.knownStalls = rememberNames(session.knownStalls, [[lastOrder.stall.name, lastOrder.stallId]]);
+      return { cart: newCart, stall: lastOrder.stall.name, skipped };
+    }
 
     default:
       return { error: `Unknown tool ${name}` };

@@ -97,8 +97,16 @@ export const toolDefinitions: Groq.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "get_pickup_slots",
       description:
-        "Get bookable pickup time slots for the stall the current cart belongs to. Call this once the student is ready to check out.",
-      parameters: { type: "object", properties: {} },
+        "Get bookable pickup time slots for the stall the current cart belongs to. Call this once the student is ready to check out. If they named a specific time (e.g. \"around 6pm\", \"after 5\"), pass preferred_time so the results are the closest slots to that time instead of the soonest ones — if the closest result is still far off, tell the student plainly that nothing is available near their requested time rather than silently showing unrelated slots.",
+      parameters: {
+        type: "object",
+        properties: {
+          preferred_time: {
+            type: "string",
+            description: "24-hour HH:MM the student asked for, e.g. '18:00' for 6pm. Omit if they didn't name a time.",
+          },
+        },
+      },
     },
   },
   {
@@ -133,6 +141,24 @@ export const toolDefinitions: Groq.Chat.Completions.ChatCompletionTool[] = [
         properties: { order_id: { type: "string" } },
         required: ["order_id"],
       },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_order_history",
+      description:
+        "Get the student's past orders (any status — placed, completed, cancelled, rejected), most recent first. Use this for 'my order history', 'my past orders', or to find what to re-order when they say 'repeat my last order'.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "repeat_last_order",
+      description:
+        "Re-adds every item from the student's most recent past order into the current cart (skipping any item that's no longer available), replacing whatever stall the cart currently belongs to. Use this for 'repeat my last order' / 'same as last time' instead of manually looking up and re-adding each item.",
+      parameters: { type: "object", properties: {} },
     },
   },
 ];
