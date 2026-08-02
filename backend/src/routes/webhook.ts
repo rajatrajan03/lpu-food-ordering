@@ -38,6 +38,10 @@ webhookRouter.post("/", (req, res) => {
     text = message.text?.body as string;
   } else if (message.type === "interactive" && message.interactive?.button_reply) {
     text = message.interactive.button_reply.title as string;
+  } else if (message.type === "interactive" && message.interactive?.list_reply) {
+    // Same idea for a tapped list row (e.g. a pickup slot) — its id and title
+    // aren't in "text" fields, so route it through the tool loop the same way.
+    text = message.interactive.list_reply.title as string;
   }
   if (!text) return;
 

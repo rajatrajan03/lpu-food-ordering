@@ -4,7 +4,7 @@ import { toolDefinitions, emptySessionState, rememberNames, type SessionState, t
 import { prisma } from "../lib/prisma";
 import * as menuService from "../services/menuService";
 import * as orderService from "../services/orderService";
-import { sendWhatsAppButtons } from "../whatsapp/client";
+import { sendWhatsAppButtons, sendWhatsAppList, type ListRow } from "../whatsapp/client";
 
 // Gemini's function-calling format wants {name, description, parametersJsonSchema}
 // rather than the OpenAI-style {type:"function", function:{...}} shape the tool
@@ -27,12 +27,14 @@ const GREETING_TEXT =
 const SYSTEM_PROMPT = `You are the ordering assistant for LPU campus food stalls, talking to a student over WhatsApp.
 Rules:
 - Never invent menu items, prices, availability, or stall names — always call a tool to look them up.
+- Never invent or embellish a stall's location. A stall's location is exactly its area and block fields as returned by a tool — nothing else. Never claim a stall is "actually in X, not Y" or state any location detail that isn't literally one of those two field values.
 - When the student names a food or craving (e.g. "icecream", "burger"), always pass that word as search_menu's query field. A craving means "find me that food", not "show me everything this stall sells."
 - When the craving comes with a location ("chai near CC", "burger near boys hostel"), pass BOTH query and area/block to search_menu in that ONE call. Never fall back to list_stalls-by-area for a craving request — that returns every stall in the area regardless of whether they serve what was asked for, which is wrong.
 - When the student names a specific stall by its proper name (e.g. "Chai Sutta Bar", "Khao Piyo") — especially one you don't already have the id for — call list_stalls with that name as the query field to look it up directly. Do NOT ask them what area/block it's in first; that's a search_menu-vs-list_stalls mixup, not something you need to ask about. Once you have its id (from this call, a prior tool result, or Known references), scope search_menu to that stall_id.
 - If the student says "different", "something else", "other options", or similar after you've already shown a list, NEVER show the same items again — call search_menu again with the exact same query/stall_id/etc. plus the offset field set to how many items you already showed, so they see a new batch. If that comes back empty, say so plainly instead of repeating the old list.
 - A cart can only contain items from one stall. If the student wants a different stall mid-cart, tell them clearly they'll need to check out or clear the current cart first.
 - Always show prices when listing items or the cart.
+- After calling get_pickup_slots, do NOT list out the slot times yourself — a tappable time picker is sent separately right after your reply. Just say something short like "Pick a pickup time below." and stop.
 - Before calling place_order, show a one-line order summary (items, total, slot time) and wait for an explicit yes. Never call place_order on the same turn you first show the summary.
 - After place_order succeeds, confirm with the order id (short form), slot time, and total in one short line.
 - If a search returns nothing, or an item/variant/slot turns out unavailable, don't just say "not available" — make ONE more tool call to find a close alternative (broader query, different stall, next open slot) before replying.
@@ -41,9 +43,10 @@ Rules:
 - NEVER show raw database ids to the student, and NEVER repeat or summarize the "Known references" block back in your reply — that block is for your own internal use only, the student must never see it or anything resembling it. When listing stalls or items, number them (1, 2, 3...) and show just the name/area/price; the student will reply by number or name, and you resolve that yourself using the Known references or the numbered list you just sent.
 - You only have student-facing tools. Never claim to change stall settings, menus, or other students' orders — that's outside what you can do here.`;
 
-// Kept small so a confused multi-tool-call turn (e.g. repeated failed
-// lookups) can't stack unbounded tool results into one request.
-const MAX_TOOL_ITERATIONS = 3;
+// Gemini's free tier has far more headroom than Groq's did, so this can be
+// generous — a multi-step flow (look up stall -> search its menu -> resolve
+// a cart conflict) can legitimately need several tool calls in one turn.
+const MAX_TOOL_ITERATIONS = 8;
 const MAX_HISTORY_MESSAGES = 10;
 const MAX_HISTORY_MESSAGE_CHARS = 400;
 
@@ -129,11 +132,22 @@ async function findOrCreateStudent(whatsappNumber: string) {
   });
 }
 
+/** Formats a Prisma @db.Time value (returned as a Date on 1970-01-01) as "9:00 AM". */
+function formatSlotTime(t: Date): string {
+  return new Date(t).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", hour12: true });
+}
+
+/** Populated by the get_pickup_slots case so the caller can follow up with a tappable list. */
+interface ToolSideEffects {
+  pickupSlotRows?: ListRow[];
+}
+
 async function executeTool(
   name: string,
   args: Record<string, unknown>,
   studentId: string,
   session: SessionState,
+  sideEffects: ToolSideEffects,
 ): Promise<unknown> {
   switch (name) {
     case "list_stalls": {
@@ -221,7 +235,11 @@ async function executeTool(
     case "get_pickup_slots": {
       if (!session.activeStallId) return { error: "Add something to the cart first." };
       const slots = await menuService.getAvailablePickupSlots(session.activeStallId);
-      return { slots };
+      sideEffects.pickupSlotRows = slots.map((s) => ({
+        id: s.id,
+        title: `${formatSlotTime(s.startTime)} – ${formatSlotTime(s.endTime)}`,
+      }));
+      return { slots: slots.map((s) => ({ id: s.id, time: `${formatSlotTime(s.startTime)} – ${formatSlotTime(s.endTime)}` })) };
     }
 
     case "place_order": {
@@ -297,6 +315,8 @@ export async function handleIncomingMessage(whatsappNumber: string, text: string
   ];
 
   let finalReply = "Sorry, something went wrong — please try again.";
+  let convergedToText = false;
+  const sideEffects: ToolSideEffects = {};
 
   try {
     for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
@@ -305,6 +325,7 @@ export async function handleIncomingMessage(whatsappNumber: string, text: string
       const calls = response.functionCalls;
       if (!calls || calls.length === 0) {
         finalReply = response.text ?? finalReply;
+        convergedToText = true;
         break;
       }
 
@@ -313,10 +334,17 @@ export async function handleIncomingMessage(whatsappNumber: string, text: string
 
       const responseParts: Part[] = [];
       for (const call of calls) {
-        const result = await executeTool(call.name ?? "", call.args ?? {}, student.id, session);
+        const result = await executeTool(call.name ?? "", call.args ?? {}, student.id, session, sideEffects);
         responseParts.push({ functionResponse: { name: call.name, response: { result } } });
       }
       contents.push({ role: "user", parts: responseParts });
+    }
+    if (!convergedToText) {
+      // Hit MAX_TOOL_ITERATIONS without the model ever giving a plain-text
+      // answer — visible in logs so a recurring pattern here (rather than a
+      // one-off) is easy to spot, distinct from an actual thrown error.
+      console.error(`Conversation engine: exhausted ${MAX_TOOL_ITERATIONS} tool iterations without a final reply`);
+      finalReply = "Let's take that one step at a time — what would you like to do?";
     }
   } catch (err) {
     console.error("Conversation engine error:", err);
@@ -342,6 +370,12 @@ export async function handleIncomingMessage(whatsappNumber: string, text: string
     where: { id: student.id },
     data: { sessionState: session as unknown as object },
   });
+
+  // Follow the text reply with a tappable slot picker instead of making the
+  // student type back a number/time by hand.
+  if (sideEffects.pickupSlotRows?.length) {
+    await sendWhatsAppList(whatsappNumber, "Pick a pickup time:", "Choose a slot", sideEffects.pickupSlotRows);
+  }
 
   return finalReply;
 }

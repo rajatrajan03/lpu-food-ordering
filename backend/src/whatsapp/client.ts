@@ -66,3 +66,53 @@ export async function sendWhatsAppButtons(to: string, body: string, buttons: Qui
     console.log("WhatsApp button send succeeded, to:", to);
   }
 }
+
+export interface ListRow {
+  id: string;
+  title: string; // WhatsApp caps list row titles at 24 chars
+  description?: string; // caps at 72 chars
+}
+
+/** Sends a tappable list picker (up to 10 rows) — used for pickup slots, which can exceed the 3-button cap. */
+export async function sendWhatsAppList(
+  to: string,
+  body: string,
+  buttonText: string,
+  rows: ListRow[],
+): Promise<void> {
+  const res = await fetch(apiUrl("messages"), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "list",
+        body: { text: body },
+        action: {
+          button: buttonText.slice(0, 20),
+          sections: [
+            {
+              rows: rows.slice(0, 10).map((r) => ({
+                id: r.id,
+                title: r.title.slice(0, 24),
+                ...(r.description ? { description: r.description.slice(0, 72) } : {}),
+              })),
+            },
+          ],
+        },
+      },
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    console.error("WhatsApp list send failed:", res.status, errText);
+  } else {
+    console.log("WhatsApp list send succeeded, to:", to);
+  }
+}

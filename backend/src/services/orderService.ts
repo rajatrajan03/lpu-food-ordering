@@ -4,24 +4,31 @@ import { sendWhatsAppText } from "../whatsapp/client";
 
 export class OrderError extends Error {}
 
-const STATUS_MESSAGES: Partial<Record<OrderStatus, (stallName: string) => string>> = {
-  accepted: (stall) => `Your order at ${stall} has been accepted ✅ We'll let you know once it's being prepared.`,
-  rejected: (stall) => `Sorry, ${stall} wasn't able to accept your order. Your pickup slot has been released — feel free to try another stall or time.`,
-  preparing: (stall) => `${stall} has started preparing your order 🍳`,
-  ready: (stall) => `Your order at ${stall} is ready for pickup 🎉`,
+// WhatsApp renders *text* as bold — used here for a consistent, clean header
+// line instead of a wall of casual emoji, per feedback that the old copy
+// ("has been accepted ✅ We'll let you know...") read unpolished.
+const STATUS_LINES: Partial<Record<OrderStatus, string>> = {
+  accepted: "Accepted — we'll prepare it shortly.",
+  rejected: "Not accepted this time. Your pickup slot has been released.",
+  preparing: "Being prepared now.",
+  ready: "Ready for pickup!",
 };
 
 /** Fire-and-forget — a notification failure shouldn't fail the status transition itself. */
-function notifyStudentOfStatus(order: { studentId: string; status: OrderStatus; stallId: string }) {
-  const compose = STATUS_MESSAGES[order.status];
-  if (!compose) return;
+function notifyStudentOfStatus(order: { id: string; studentId: string; status: OrderStatus; stallId: string }) {
+  const line = STATUS_LINES[order.status];
+  if (!line) return;
   prisma.student
     .findUnique({ where: { id: order.studentId } })
     .then(async (student) => {
       if (!student) return;
       const stall = await prisma.stall.findUnique({ where: { id: order.stallId } });
       if (!stall) return;
-      await sendWhatsAppText(student.whatsappNumber, compose(stall.name));
+      const shortId = order.id.slice(0, 8);
+      await sendWhatsAppText(
+        student.whatsappNumber,
+        `*Order Update* — ${stall.name} (#${shortId})\n${line}`,
+      );
     })
     .catch((err) => console.error("Failed to send order status WhatsApp notification:", err));
 }
