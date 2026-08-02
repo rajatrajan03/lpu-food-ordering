@@ -5,19 +5,22 @@ export async function searchMenu(params: {
   stallId?: string;
   categoryName?: string;
   vegOnly?: boolean;
+  area?: string;
+  block?: string;
   limit?: number;
   offset?: number;
 }) {
   // A WhatsApp reply listing every match gets long fast — 8 keeps the AI's
   // formatted response (and its footprint in conversation history) small
   // enough to not blow Groq's free-tier tokens-per-minute budget on the next turn.
-  const { query, stallId, categoryName, vegOnly, limit = 8, offset = 0 } = params;
+  const { query, stallId, categoryName, vegOnly, area, block, limit = 8, offset = 0 } = params;
 
   return prisma.menuItem.findMany({
     where: {
       available: true,
       ...(stallId ? { stallId } : {}),
       ...(vegOnly ? { isVeg: true } : {}),
+      ...(area || block ? { stall: { ...(area ? { area } : {}), ...(block ? { block } : {}) } } : {}),
       ...(query
         ? {
             OR: [

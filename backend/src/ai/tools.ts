@@ -23,7 +23,7 @@ export const toolDefinitions: Groq.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "search_menu",
       description:
-        "Search menu items by name/description/category, optionally scoped to one stall. Call this whenever the student names a food, a craving, or a category — do not guess prices or availability yourself.",
+        "Search menu items by name/description/category, optionally scoped to one stall or one campus area/block. Call this whenever the student names a food, a craving, or a category — do not guess prices or availability yourself. If they combine a craving with a location (e.g. 'chai near CC'), pass both query and area/block in this ONE call instead of listing every stall in that area.",
       parameters: {
         type: "object",
         properties: {
@@ -33,6 +33,8 @@ export const toolDefinitions: Groq.Chat.Completions.ChatCompletionTool[] = [
             description:
               "Restrict results to one stall. Must be an actual id returned by list_stalls or a previous search_menu result — never guess this from a stall's display name. If you only know the stall's name, omit this field and let the search run across all stalls, or call list_stalls first to resolve the id.",
           },
+          area: { type: "string", description: "Campus area to restrict results to, e.g. 'CC', 'Boys Hostel'." },
+          block: { type: "string", description: "Campus block to restrict results to." },
           category: { type: "string", description: "Canonical category name, e.g. 'Pizza'." },
           veg_only: { type: "boolean" },
           offset: {
