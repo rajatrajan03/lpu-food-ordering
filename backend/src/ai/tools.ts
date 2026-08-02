@@ -8,12 +8,17 @@ export const toolDefinitions: Groq.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "list_stalls",
       description:
-        "List or look up food stalls on campus. Use `query` whenever the student names a specific stall (e.g. 'Chai Sutta Bar') — do not ask them what area it's in, just look it up by name. Use `area` when they want to browse by location instead.",
+        "List or look up food stalls on campus (returns up to 10 at a time). Use `query` whenever the student names a specific stall (e.g. 'Chai Sutta Bar') — do not ask them what area it's in, just look it up by name. Use `area` when they want to browse by location instead.",
       parameters: {
         type: "object",
         properties: {
           area: { type: "string", description: "Campus area to filter by, e.g. 'Boys Hostel'." },
           query: { type: "string", description: "Stall name (or part of it) to search for, e.g. 'Chai Sutta Bar'." },
+          offset: {
+            type: "integer",
+            minimum: 0,
+            description: "Skip this many stalls before returning results — use when the student asks for more.",
+          },
         },
       },
     },

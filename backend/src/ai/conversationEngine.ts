@@ -141,9 +141,14 @@ async function executeTool(
       const stalls = await menuService.listStalls({
         area: args.area as string | undefined,
         query: args.query as string | undefined,
+        offset: (args.offset as number | undefined) ?? 0,
       });
       session.knownStalls = rememberNames(session.knownStalls, stalls.map((s) => [s.name, s.id]));
-      return stalls;
+      // Trimmed to just what the model needs to talk about a stall — the full
+      // Prisma row (openingHours, pickupNote, createdAt, status...) was the
+      // single biggest contributor to blowing Groq's free-tier token budget,
+      // especially on an unscoped "browse everything" call.
+      return stalls.map((s) => ({ id: s.id, name: s.name, area: s.area, block: s.block }));
     }
 
     case "search_menu": {
@@ -158,7 +163,17 @@ async function executeTool(
       });
       session.knownItems = rememberNames(session.knownItems, items.map((i) => [i.name, i.id]));
       session.knownStalls = rememberNames(session.knownStalls, items.map((i) => [i.stall.name, i.stallId]));
-      return items;
+      // Same trim as list_stalls — drop the nested full stall/category rows
+      // and only keep the fields the model actually needs to answer with.
+      return items.map((i) => ({
+        id: i.id,
+        name: i.name,
+        price: Number(i.basePrice),
+        veg: i.isVeg,
+        stallId: i.stallId,
+        stallName: i.stall.name,
+        variants: i.variants.map((v) => ({ id: v.id, label: v.label, price: Number(v.price) })),
+      }));
     }
 
     case "view_cart":
