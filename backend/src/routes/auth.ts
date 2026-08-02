@@ -20,8 +20,10 @@ async function verifyGoogleCredential(credential: string): Promise<{ email: stri
     const ticket = await googleClient.verifyIdToken({ idToken: credential, audience: process.env.GOOGLE_CLIENT_ID });
     const payload = ticket.getPayload();
     if (!payload?.email || !payload.sub) return null;
+    console.log("Google credential verified for email:", payload.email);
     return { email: payload.email, googleId: payload.sub };
-  } catch {
+  } catch (err) {
+    console.error("Google credential verification failed:", err instanceof Error ? err.message : err);
     return null;
   }
 }
@@ -112,7 +114,10 @@ authRouter.post(
     if (!verified) return res.status(401).json({ error: "Invalid Google credential." });
 
     const admin = await prisma.superAdmin.findUnique({ where: { email: verified.email } });
-    if (!admin) return res.status(403).json({ error: "No Super Admin account is registered for this Google account." });
+    if (!admin) {
+      console.error("No Super Admin found for Google email:", verified.email);
+      return res.status(403).json({ error: "No Super Admin account is registered for this Google account." });
+    }
 
     if (admin.googleId !== verified.googleId) {
       await prisma.superAdmin.update({ where: { id: admin.id }, data: { googleId: verified.googleId } });
