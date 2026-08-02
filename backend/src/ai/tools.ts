@@ -159,6 +159,10 @@ export interface SessionState {
   // the tool results that produced it.
   knownStalls: Record<string, string>;
   knownItems: Record<string, string>;
+  // Same idea for pickup slots: keyed by their displayed time range (e.g.
+  // "9:00 AM – 9:15 AM") so a typed-back or tapped time resolves to the real
+  // slot id without re-calling get_pickup_slots.
+  knownSlots: Record<string, string>;
 }
 
 const MAX_KNOWN_ENTRIES = 30;
@@ -175,5 +179,5 @@ export function rememberNames(map: Record<string, string>, entries: [string, str
 }
 
 export function emptySessionState(): SessionState {
-  return { cart: [], recentMessages: [], knownStalls: {}, knownItems: {} };
+  return { cart: [], recentMessages: [], knownStalls: {}, knownItems: {}, knownSlots: {} };
 }

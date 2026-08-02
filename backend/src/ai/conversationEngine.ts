@@ -34,7 +34,8 @@ Rules:
 - If the student says "different", "something else", "other options", or similar after you've already shown a list, NEVER show the same items again — call search_menu again with the exact same query/stall_id/etc. plus the offset field set to how many items you already showed, so they see a new batch. If that comes back empty, say so plainly instead of repeating the old list.
 - A cart can only contain items from one stall. If the student wants a different stall mid-cart, tell them clearly they'll need to check out or clear the current cart first.
 - Always show prices when listing items or the cart.
-- After calling get_pickup_slots, do NOT list out the slot times yourself — a tappable time picker is sent separately right after your reply. Just say something short like "Pick a pickup time below." and stop.
+- After calling get_pickup_slots, do NOT list out the slot times yourself — a tappable time picker is sent separately right after your reply. Just say something short like "Pick a pickup time below." and stop. Once the student replies with a time (typed or tapped), resolve it to a pickup_slot_id from Known references' "Pickup slots" map — do NOT call get_pickup_slots again just to re-look-up a time you already showed; only call it again if the student is starting a fresh checkout for a different stall/cart.
+- If the student sends something unrelated to picking a slot while one is pending (e.g. "remove it", changing an item), handle that request directly — removing/changing a cart item never requires re-fetching pickup slots.
 - Before calling place_order, show a one-line order summary (items, total, slot time) and wait for an explicit yes. Never call place_order on the same turn you first show the summary.
 - After place_order succeeds, confirm with the order id (short form), slot time, and total in one short line.
 - If a search returns nothing, or an item/variant/slot turns out unavailable, don't just say "not available" — make ONE more tool call to find a close alternative (broader query, different stall, next open slot) before replying.
@@ -84,6 +85,7 @@ function getSessionState(raw: unknown): SessionState {
     recentMessages: s.recentMessages ?? [],
     knownStalls: s.knownStalls ?? {},
     knownItems: s.knownItems ?? {},
+    knownSlots: s.knownSlots ?? {},
   };
 }
 
@@ -117,10 +119,12 @@ async function generateContentWithRetry(contents: Content[], systemInstruction: 
 function knownReferencesText(session: SessionState): string {
   const hasStalls = Object.keys(session.knownStalls).length > 0;
   const hasItems = Object.keys(session.knownItems).length > 0;
-  if (!hasStalls && !hasItems) return "";
+  const hasSlots = Object.keys(session.knownSlots).length > 0;
+  if (!hasStalls && !hasItems && !hasSlots) return "";
   const parts: string[] = ["\n\nKnown references from earlier in this conversation:"];
   if (hasStalls) parts.push(`Stalls (name -> id): ${JSON.stringify(session.knownStalls)}`);
   if (hasItems) parts.push(`Items (name -> id): ${JSON.stringify(session.knownItems)}`);
+  if (hasSlots) parts.push(`Pickup slots (time range -> id): ${JSON.stringify(session.knownSlots)}`);
   return parts.join("\n");
 }
 
@@ -235,11 +239,13 @@ async function executeTool(
     case "get_pickup_slots": {
       if (!session.activeStallId) return { error: "Add something to the cart first." };
       const slots = await menuService.getAvailablePickupSlots(session.activeStallId);
-      sideEffects.pickupSlotRows = slots.map((s) => ({
+      const labeled = slots.map((s) => ({
         id: s.id,
-        title: `${formatSlotTime(s.startTime)} – ${formatSlotTime(s.endTime)}`,
+        time: `${formatSlotTime(s.startTime)} – ${formatSlotTime(s.endTime)}`,
       }));
-      return { slots: slots.map((s) => ({ id: s.id, time: `${formatSlotTime(s.startTime)} – ${formatSlotTime(s.endTime)}` })) };
+      sideEffects.pickupSlotRows = labeled.map((s) => ({ id: s.id, title: s.time }));
+      session.knownSlots = rememberNames(session.knownSlots, labeled.map((s) => [s.time, s.id]));
+      return { slots: labeled };
     }
 
     case "place_order": {
