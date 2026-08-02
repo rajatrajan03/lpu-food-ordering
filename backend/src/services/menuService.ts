@@ -20,7 +20,17 @@ export async function searchMenu(params: {
       available: true,
       ...(stallId ? { stallId } : {}),
       ...(vegOnly ? { isVeg: true } : {}),
-      ...(area || block ? { stall: { ...(area ? { area } : {}), ...(block ? { block } : {}) } } : {}),
+      // contains/insensitive, not exact-match — the model's phrasing of an
+      // area ("cc", "CC Block", "near cc") varies, and an exact match against
+      // the stored value silently returns zero results on any mismatch.
+      ...(area || block
+        ? {
+            stall: {
+              ...(area ? { area: { contains: area, mode: "insensitive" } } : {}),
+              ...(block ? { block: { contains: block, mode: "insensitive" } } : {}),
+            },
+          }
+        : {}),
       ...(query
         ? {
             OR: [
@@ -58,8 +68,8 @@ export async function listStalls(
   return prisma.stall.findMany({
     where: {
       status: "active",
-      ...(area ? { area } : {}),
-      ...(block ? { block } : {}),
+      ...(area ? { area: { contains: area, mode: "insensitive" } } : {}),
+      ...(block ? { block: { contains: block, mode: "insensitive" } } : {}),
       ...(query ? { name: { contains: query, mode: "insensitive" } } : {}),
     },
     orderBy: { name: "asc" },
