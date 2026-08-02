@@ -1,10 +1,24 @@
-import type Groq from "groq-sdk";
-import { groq, GROQ_MODEL } from "./groqClient";
+import type { Content, Part } from "@google/genai";
+import { genAI, GEMINI_MODEL } from "./geminiClient";
 import { toolDefinitions, emptySessionState, rememberNames, type SessionState, type CartLine } from "./tools";
 import { prisma } from "../lib/prisma";
 import * as menuService from "../services/menuService";
 import * as orderService from "../services/orderService";
 import { sendWhatsAppButtons } from "../whatsapp/client";
+
+// Gemini's function-calling format wants {name, description, parametersJsonSchema}
+// rather than the OpenAI-style {type:"function", function:{...}} shape the tool
+// definitions are written in — parametersJsonSchema accepts raw JSON Schema
+// as-is, so no deeper conversion of the parameter definitions is needed.
+const GEMINI_TOOLS = [
+  {
+    functionDeclarations: toolDefinitions.map((t) => ({
+      name: t.function.name,
+      description: t.function.description,
+      parametersJsonSchema: t.function.parameters,
+    })),
+  },
+];
 
 const GREETING_PATTERN = /^(hi+|hello+|hey+|hlo|yo|start|menu)\b/i;
 const GREETING_TEXT =
@@ -27,10 +41,8 @@ Rules:
 - NEVER show raw database ids to the student, and NEVER repeat or summarize the "Known references" block back in your reply — that block is for your own internal use only, the student must never see it or anything resembling it. When listing stalls or items, number them (1, 2, 3...) and show just the name/area/price; the student will reply by number or name, and you resolve that yourself using the Known references or the numbered list you just sent.
 - You only have student-facing tools. Never claim to change stall settings, menus, or other students' orders — that's outside what you can do here.`;
 
-// Kept deliberately small — Groq's free tier caps at 8k tokens/minute, and
-// this history is resent on every single turn. A confused multi-tool-call
-// turn (e.g. repeated failed lookups) stacks tool results within that one
-// request, so capping iterations bounds the worst case per turn too.
+// Kept small so a confused multi-tool-call turn (e.g. repeated failed
+// lookups) can't stack unbounded tool results into one request.
 const MAX_TOOL_ITERATIONS = 3;
 const MAX_HISTORY_MESSAGES = 10;
 const MAX_HISTORY_MESSAGE_CHARS = 400;
@@ -72,54 +84,41 @@ function getSessionState(raw: unknown): SessionState {
   };
 }
 
-function isToolUseFailedError(err: unknown): boolean {
-  const code = (err as { error?: { error?: { code?: string } } })?.error?.error?.code;
-  return code === "tool_use_failed";
-}
-
-/** Groq free-tier tokens/requests-per-minute cap — worth a distinct, friendlier
- * reply since "something went wrong" reads like a real bug, not "try again shortly." */
+/** Gemini's quota errors surface as HTTP 429 (RESOURCE_EXHAUSTED) — worth a
+ * distinct, friendlier reply since "something went wrong" reads like a real
+ * bug, not "try again shortly." */
 function isRateLimitError(err: unknown): boolean {
-  const status = (err as { status?: number })?.status;
-  const code = (err as { error?: { error?: { code?: string } } })?.error?.error?.code;
-  return status === 429 || status === 413 || code === "rate_limit_exceeded";
+  const status = (err as { status?: number })?.status ?? (err as { code?: number })?.code;
+  const message = String((err as { message?: string })?.message ?? "");
+  return status === 429 || /RESOURCE_EXHAUSTED|rate.?limit/i.test(message);
 }
 
-/**
- * Groq's Llama tool-calling occasionally emits a malformed pseudo-call
- * (e.g. `<function=...>`) instead of a real tool_calls response, which the
- * API rejects with a 400 `tool_use_failed`. This is a known, usually
- * transient quirk — retrying the same request almost always succeeds.
- */
-async function createChatCompletionWithRetry(
-  messages: Groq.Chat.Completions.ChatCompletionMessageParam[],
-  attempts = 5,
-) {
+/** Transient network/5xx errors are worth one blind retry before giving up. */
+async function generateContentWithRetry(contents: Content[], systemInstruction: string, attempts = 3) {
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
     try {
-      return await groq.chat.completions.create({
-        model: GROQ_MODEL,
-        messages,
-        tools: toolDefinitions,
-        tool_choice: "auto",
+      return await genAI.models.generateContent({
+        model: GEMINI_MODEL,
+        contents,
+        config: { systemInstruction, tools: GEMINI_TOOLS },
       });
     } catch (err) {
       lastErr = err;
-      if (!isToolUseFailedError(err)) throw err;
+      if (isRateLimitError(err)) throw err;
     }
   }
   throw lastErr;
 }
 
-function knownReferencesMessage(session: SessionState): Groq.Chat.Completions.ChatCompletionMessageParam | null {
+function knownReferencesText(session: SessionState): string {
   const hasStalls = Object.keys(session.knownStalls).length > 0;
   const hasItems = Object.keys(session.knownItems).length > 0;
-  if (!hasStalls && !hasItems) return null;
-  const parts: string[] = ["Known references from earlier in this conversation:"];
+  if (!hasStalls && !hasItems) return "";
+  const parts: string[] = ["\n\nKnown references from earlier in this conversation:"];
   if (hasStalls) parts.push(`Stalls (name -> id): ${JSON.stringify(session.knownStalls)}`);
   if (hasItems) parts.push(`Items (name -> id): ${JSON.stringify(session.knownItems)}`);
-  return { role: "system", content: parts.join("\n") };
+  return parts.join("\n");
 }
 
 async function findOrCreateStudent(whatsappNumber: string) {
@@ -288,40 +287,36 @@ export async function handleIncomingMessage(whatsappNumber: string, text: string
     return null;
   }
 
-  const knownRefs = knownReferencesMessage(session);
-  const messages: Groq.Chat.Completions.ChatCompletionMessageParam[] = [
-    { role: "system", content: SYSTEM_PROMPT },
-    ...(knownRefs ? [knownRefs] : []),
-    ...session.recentMessages,
-    { role: "user", content: text },
+  const systemInstruction = SYSTEM_PROMPT + knownReferencesText(session);
+  const contents: Content[] = [
+    ...session.recentMessages.map((m) => ({
+      role: m.role === "assistant" ? "model" : "user",
+      parts: [{ text: m.content }],
+    })),
+    { role: "user", parts: [{ text }] },
   ];
 
   let finalReply = "Sorry, something went wrong — please try again.";
 
   try {
     for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
-      const completion = await createChatCompletionWithRetry(messages);
+      const response = await generateContentWithRetry(contents, systemInstruction);
 
-      const choice = completion.choices[0].message;
-      messages.push(choice);
-
-      if (!choice.tool_calls || choice.tool_calls.length === 0) {
-        finalReply = choice.content ?? finalReply;
+      const calls = response.functionCalls;
+      if (!calls || calls.length === 0) {
+        finalReply = response.text ?? finalReply;
         break;
       }
 
-      for (const call of choice.tool_calls) {
-        // Some models emit the literal string "null" for a no-argument call
-        // (valid JSON, but JSON.parse("null") === null, not {}) — normalize it.
-        const parsed = JSON.parse(call.function.arguments || "{}");
-        const args = parsed && typeof parsed === "object" ? parsed : {};
-        const result = await executeTool(call.function.name, args, student.id, session);
-        messages.push({
-          role: "tool",
-          tool_call_id: call.id,
-          content: JSON.stringify(result),
-        });
+      const modelContent = response.candidates?.[0]?.content;
+      if (modelContent) contents.push(modelContent);
+
+      const responseParts: Part[] = [];
+      for (const call of calls) {
+        const result = await executeTool(call.name ?? "", call.args ?? {}, student.id, session);
+        responseParts.push({ functionResponse: { name: call.name, response: { result } } });
       }
+      contents.push({ role: "user", parts: responseParts });
     }
   } catch (err) {
     console.error("Conversation engine error:", err);
