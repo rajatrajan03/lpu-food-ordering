@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Coffee,
   Eye,
   EyeOff,
+  KeyRound,
   Lock,
   Mail,
   MessageCircle,
@@ -19,6 +20,19 @@ import {
   Zap,
 } from "lucide-react";
 import { api, setAuth, type Role } from "../api/client";
+
+declare global {
+  interface Window {
+    google?: {
+      accounts: {
+        id: {
+          initialize: (config: { client_id: string; callback: (resp: { credential: string }) => void }) => void;
+          renderButton: (parent: HTMLElement, options: Record<string, unknown>) => void;
+        };
+      };
+    };
+  }
+}
 
 const DEMO_STATUSES: { label: string; color: string; soft: string }[] = [
   { label: "placed", color: "var(--warn)", soft: "var(--warn-soft)" },
@@ -63,6 +77,8 @@ function LiveOrderMockup() {
   );
 }
 
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
+
 export default function Login() {
   const [role, setRole] = useState<Role>("stall_owner");
   const [identifier, setIdentifier] = useState(""); // phone or email
@@ -70,24 +86,108 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [pendingAdminId, setPendingAdminId] = useState<string | null>(null);
+  const [otp, setOtp] = useState("");
+  const googleButtonRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
+
+  async function completeAdminLogin(otpRequired: { otpRequired: true; adminId: string }) {
+    setPendingAdminId(otpRequired.adminId);
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setLoading(true);
     try {
-      const path = role === "stall_owner" ? "/api/auth/owner/login" : "/api/auth/admin/login";
-      const body = role === "stall_owner" ? { phone: identifier, password } : { email: identifier, password };
-      const data = await api<{ token: string; name: string }>(path, { method: "POST", body });
-      setAuth(data.token, role, data.name);
-      navigate(role === "stall_owner" ? "/owner" : "/admin");
+      if (role === "stall_owner") {
+        const data = await api<{ token: string; name: string }>("/api/auth/owner/login", {
+          method: "POST",
+          body: { phone: identifier, password },
+        });
+        setAuth(data.token, role, data.name);
+        navigate("/owner");
+        return;
+      }
+      const data = await api<{ otpRequired: true; adminId: string }>("/api/auth/admin/login", {
+        method: "POST",
+        body: { email: identifier, password },
+      });
+      await completeAdminLogin(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed.");
     } finally {
       setLoading(false);
     }
   }
+
+  async function handleGoogleCredential(credential: string) {
+    setError(null);
+    setLoading(true);
+    try {
+      const data = await api<{ otpRequired: true; adminId: string }>("/api/auth/admin/google", {
+        method: "POST",
+        body: { credential },
+      });
+      await completeAdminLogin(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Google sign-in failed.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleVerifyOtp(e: React.FormEvent) {
+    e.preventDefault();
+    if (!pendingAdminId) return;
+    setError(null);
+    setLoading(true);
+    try {
+      const data = await api<{ token: string; name: string }>("/api/auth/admin/verify-otp", {
+        method: "POST",
+        body: { adminId: pendingAdminId, otp },
+      });
+      setAuth(data.token, "super_admin", data.name);
+      navigate("/admin");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Verification failed.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Renders Google's own sign-in button once the GSI script has loaded — only
+  // relevant on the Super Admin tab, and only while we're not already mid-OTP.
+  useEffect(() => {
+    if (role !== "super_admin" || pendingAdminId || !GOOGLE_CLIENT_ID) return;
+    let cancelled = false;
+    function render() {
+      if (cancelled || !window.google || !googleButtonRef.current) return;
+      googleButtonRef.current.innerHTML = "";
+      window.google.accounts.id.initialize({
+        client_id: GOOGLE_CLIENT_ID as string,
+        callback: (resp) => handleGoogleCredential(resp.credential),
+      });
+      window.google.accounts.id.renderButton(googleButtonRef.current, {
+        theme: "outline",
+        size: "large",
+        width: 320,
+      });
+    }
+    if (window.google) render();
+    else {
+      const id = setInterval(() => {
+        if (window.google) {
+          render();
+          clearInterval(id);
+        }
+      }, 200);
+      return () => {
+        cancelled = true;
+        clearInterval(id);
+      };
+    }
+  }, [role, pendingAdminId]);
 
   return (
     <div className="login-wrap">
@@ -188,7 +288,11 @@ export default function Login() {
               role="tab"
               aria-selected={role === "stall_owner"}
               className={role === "stall_owner" ? "active" : ""}
-              onClick={() => setRole("stall_owner")}
+              onClick={() => {
+                setRole("stall_owner");
+                setPendingAdminId(null);
+                setError(null);
+              }}
             >
               Stall Owner
             </button>
@@ -197,65 +301,121 @@ export default function Login() {
               role="tab"
               aria-selected={role === "super_admin"}
               className={role === "super_admin" ? "active" : ""}
-              onClick={() => setRole("super_admin")}
+              onClick={() => {
+                setRole("super_admin");
+                setPendingAdminId(null);
+                setError(null);
+              }}
             >
               Super Admin
             </button>
           </div>
 
-          <form onSubmit={handleSubmit} className="stack">
-            <div className="field">
-              <label>{role === "stall_owner" ? "Phone number" : "Email"}</label>
-              <div className="field-icon-wrap">
-                <span className="field-icon" aria-hidden>
-                  {role === "stall_owner" ? <Phone size={15} strokeWidth={2} /> : <Mail size={15} strokeWidth={2} />}
-                </span>
-                <input
-                  placeholder={role === "stall_owner" ? "e.g. 9876543210" : "you@example.com"}
-                  value={identifier}
-                  onChange={(e) => setIdentifier(e.target.value)}
-                  required
-                />
+          {role === "super_admin" && pendingAdminId ? (
+            <form onSubmit={handleVerifyOtp} className="stack">
+              <p className="brand-sub" style={{ margin: 0 }}>
+                We sent a 6-digit code to your WhatsApp. Enter it below to finish signing in.
+              </p>
+              <div className="field">
+                <label>Verification code</label>
+                <div className="field-icon-wrap">
+                  <span className="field-icon" aria-hidden>
+                    <KeyRound size={15} strokeWidth={2} />
+                  </span>
+                  <input
+                    placeholder="123456"
+                    inputMode="numeric"
+                    maxLength={6}
+                    value={otp}
+                    onChange={(e) => setOtp(e.target.value.replace(/\D/g, ""))}
+                    required
+                    autoFocus
+                  />
+                </div>
               </div>
-            </div>
-            <div className="field">
-              <label>Password</label>
-              <div className="field-icon-wrap">
-                <span className="field-icon" aria-hidden>
-                  <Lock size={15} strokeWidth={2} />
-                </span>
-                <input
-                  type={showPassword ? "text" : "password"}
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                />
-                <button
-                  type="button"
-                  className="toggle-visibility"
-                  onClick={() => setShowPassword((v) => !v)}
-                  aria-label={showPassword ? "Hide password" : "Show password"}
-                >
-                  {showPassword ? <EyeOff size={15} strokeWidth={2} /> : <Eye size={15} strokeWidth={2} />}
-                </button>
-              </div>
-            </div>
-            {error && (
-              <motion.div
-                className="error-banner"
-                role="alert"
-                initial={{ opacity: 0, y: -6 }}
-                animate={{ opacity: 1, y: 0 }}
+              {error && (
+                <motion.div className="error-banner" role="alert" initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }}>
+                  {error}
+                </motion.div>
+              )}
+              <button type="submit" className="primary big" disabled={loading || otp.length !== 6} style={{ marginTop: "0.35rem" }}>
+                {loading && <span className="spinner" />}
+                {loading ? "Verifying…" : "Verify & sign in"}
+              </button>
+              <button
+                type="button"
+                className="toggle-visibility"
+                style={{ alignSelf: "center" }}
+                onClick={() => {
+                  setPendingAdminId(null);
+                  setOtp("");
+                  setError(null);
+                }}
               >
-                {error}
-              </motion.div>
-            )}
-            <button type="submit" className="primary big" disabled={loading} style={{ marginTop: "0.35rem" }}>
-              {loading && <span className="spinner" />}
-              {loading ? "Signing in…" : "Sign in"}
-            </button>
-          </form>
+                ‹ Back
+              </button>
+            </form>
+          ) : (
+            <form onSubmit={handleSubmit} className="stack">
+              <div className="field">
+                <label>{role === "stall_owner" ? "Phone number" : "Email"}</label>
+                <div className="field-icon-wrap">
+                  <span className="field-icon" aria-hidden>
+                    {role === "stall_owner" ? <Phone size={15} strokeWidth={2} /> : <Mail size={15} strokeWidth={2} />}
+                  </span>
+                  <input
+                    placeholder={role === "stall_owner" ? "e.g. 9876543210" : "you@example.com"}
+                    value={identifier}
+                    onChange={(e) => setIdentifier(e.target.value)}
+                    required
+                  />
+                </div>
+              </div>
+              <div className="field">
+                <label>Password</label>
+                <div className="field-icon-wrap">
+                  <span className="field-icon" aria-hidden>
+                    <Lock size={15} strokeWidth={2} />
+                  </span>
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    placeholder="••••••••"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                  />
+                  <button
+                    type="button"
+                    className="toggle-visibility"
+                    onClick={() => setShowPassword((v) => !v)}
+                    aria-label={showPassword ? "Hide password" : "Show password"}
+                  >
+                    {showPassword ? <EyeOff size={15} strokeWidth={2} /> : <Eye size={15} strokeWidth={2} />}
+                  </button>
+                </div>
+              </div>
+              {error && (
+                <motion.div
+                  className="error-banner"
+                  role="alert"
+                  initial={{ opacity: 0, y: -6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                >
+                  {error}
+                </motion.div>
+              )}
+              <button type="submit" className="primary big" disabled={loading} style={{ marginTop: "0.35rem" }}>
+                {loading && <span className="spinner" />}
+                {loading ? "Signing in…" : "Sign in"}
+              </button>
+              {role === "super_admin" && GOOGLE_CLIENT_ID && (
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "0.6rem", marginTop: "0.2rem" }}>
+                  <span className="brand-sub" style={{ fontSize: "0.75rem" }}>or</span>
+                  <div ref={googleButtonRef} />
+                </div>
+              )}
+            </form>
+          )}
         </motion.div>
       </div>
     </div>

@@ -71,11 +71,15 @@ model StallOwner {
 }
 
 model SuperAdmin {
-  id           String   @id @default(uuid())
-  name         String
-  email        String   @unique
-  passwordHash String   @map("password_hash")
-  createdAt    DateTime @default(now()) @map("created_at")
+  id             String    @id @default(uuid())
+  name           String
+  email          String    @unique
+  passwordHash   String    @map("password_hash")
+  whatsappNumber String?   @map("whatsapp_number")
+  googleId       String?   @unique @map("google_id")
+  otpCode        String?   @map("otp_code")
+  otpExpiresAt   DateTime? @map("otp_expires_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
 
   @@map("super_admins")
 }
