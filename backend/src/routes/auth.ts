@@ -14,6 +14,18 @@ const adminLoginSchema = z.object({ email: z.string().email(), password: z.strin
 const otpVerifySchema = z.object({ adminId: z.string().uuid(), otp: z.string().length(6) });
 const googleLoginSchema = z.object({ credential: z.string().min(1) });
 
+async function verifyGoogleCredential(credential: string): Promise<{ email: string; googleId: string } | null> {
+  if (!googleClient) return null;
+  try {
+    const ticket = await googleClient.verifyIdToken({ idToken: credential, audience: process.env.GOOGLE_CLIENT_ID });
+    const payload = ticket.getPayload();
+    if (!payload?.email || !payload.sub) return null;
+    return { email: payload.email, googleId: payload.sub };
+  } catch {
+    return null;
+  }
+}
+
 const OTP_TTL_MS = 5 * 60 * 1000;
 const googleClient = process.env.GOOGLE_CLIENT_ID ? new OAuth2Client(process.env.GOOGLE_CLIENT_ID) : null;
 
@@ -26,6 +38,28 @@ authRouter.post(
     const owner = await prisma.stallOwner.findUnique({ where: { phone: parsed.data.phone } });
     if (!owner || !(await bcrypt.compare(parsed.data.password, owner.passwordHash))) {
       return res.status(401).json({ error: "Incorrect phone number or password." });
+    }
+    const token = signToken({ id: owner.id, role: "stall_owner" });
+    res.json({ token, name: owner.name });
+  }),
+);
+
+// Stall Owner Google sign-in is a single step — no OTP, unlike Super Admin below.
+authRouter.post(
+  "/owner/google",
+  asyncHandler(async (req, res) => {
+    if (!googleClient) return res.status(503).json({ error: "Google login isn't configured on this server." });
+    const parsed = googleLoginSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: "Missing Google credential." });
+
+    const verified = await verifyGoogleCredential(parsed.data.credential);
+    if (!verified) return res.status(401).json({ error: "Invalid Google credential." });
+
+    const owner = await prisma.stallOwner.findUnique({ where: { email: verified.email } });
+    if (!owner) return res.status(403).json({ error: "No Stall Owner account is registered for this Google account." });
+
+    if (owner.googleId !== verified.googleId) {
+      await prisma.stallOwner.update({ where: { id: owner.id }, data: { googleId: verified.googleId } });
     }
     const token = signToken({ id: owner.id, role: "stall_owner" });
     res.json({ token, name: owner.name });
@@ -74,26 +108,14 @@ authRouter.post(
     const parsed = googleLoginSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: "Missing Google credential." });
 
-    let email: string | undefined;
-    let googleId: string | undefined;
-    try {
-      const ticket = await googleClient.verifyIdToken({
-        idToken: parsed.data.credential,
-        audience: process.env.GOOGLE_CLIENT_ID,
-      });
-      const payload = ticket.getPayload();
-      email = payload?.email;
-      googleId = payload?.sub;
-    } catch {
-      return res.status(401).json({ error: "Invalid Google credential." });
-    }
-    if (!email || !googleId) return res.status(401).json({ error: "Invalid Google credential." });
+    const verified = await verifyGoogleCredential(parsed.data.credential);
+    if (!verified) return res.status(401).json({ error: "Invalid Google credential." });
 
-    const admin = await prisma.superAdmin.findUnique({ where: { email } });
+    const admin = await prisma.superAdmin.findUnique({ where: { email: verified.email } });
     if (!admin) return res.status(403).json({ error: "No Super Admin account is registered for this Google account." });
 
-    if (admin.googleId !== googleId) {
-      await prisma.superAdmin.update({ where: { id: admin.id }, data: { googleId } });
+    if (admin.googleId !== verified.googleId) {
+      await prisma.superAdmin.update({ where: { id: admin.id }, data: { googleId: verified.googleId } });
     }
 
     try {

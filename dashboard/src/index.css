@@ -667,10 +667,6 @@ label { font-size: 0.82rem; font-weight: 600; color: var(--muted); display: bloc
   display: grid;
   grid-template-columns: 1fr 1fr;
 }
-@media (max-width: 860px) {
-  .login-wrap { grid-template-columns: 1fr; }
-  .login-hero { display: none; }
-}
 .login-hero {
   position: relative;
   background: var(--accent-grad);
@@ -739,6 +735,22 @@ label { font-size: 0.82rem; font-weight: 600; color: var(--muted); display: bloc
 .tabs button { flex: 1; border: none; background: transparent; border-radius: 8px; box-shadow: none; }
 .tabs button:hover { transform: none; }
 .tabs button.active { background: var(--panel); color: var(--ink); box-shadow: var(--shadow-xs); }
+
+/* Below the base .login-hero rules on purpose — with equal specificity, the
+   rule declared later in the cascade wins regardless of the media query, so
+   this must come after .login-hero's unconditional `display: flex` above it
+   or the hero never actually hides on phones. */
+@media (max-width: 860px) {
+  .login-wrap { grid-template-columns: 1fr; min-height: auto; }
+  .login-hero { display: none; }
+  .login-form-side { min-height: 100vh; padding: 1.5rem; }
+}
+
+.google-btn-wrap { display: flex; flex-direction: column; align-items: stretch; gap: 0.9rem; margin-top: 0.4rem; }
+.or-divider { display: flex; align-items: center; gap: 0.75rem; color: var(--faint); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; }
+.or-divider::before, .or-divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.google-btn-target { display: flex; justify-content: center; min-height: 40px; }
+.google-btn-target iframe { border-radius: 999px !important; }
 
 /* ---- Tables ---- */
 .table-scroll { overflow-x: auto; max-height: 560px; overflow-y: auto; }

@@ -121,10 +121,19 @@ export default function Login() {
     }
   }
 
-  async function handleGoogleCredential(credential: string) {
+  async function handleGoogleCredential(forRole: Role, credential: string) {
     setError(null);
     setLoading(true);
     try {
+      if (forRole === "stall_owner") {
+        const data = await api<{ token: string; name: string }>("/api/auth/owner/google", {
+          method: "POST",
+          body: { credential },
+        });
+        setAuth(data.token, "stall_owner", data.name);
+        navigate("/owner");
+        return;
+      }
       const data = await api<{ otpRequired: true; adminId: string }>("/api/auth/admin/google", {
         method: "POST",
         body: { credential },
@@ -156,22 +165,24 @@ export default function Login() {
     }
   }
 
-  // Renders Google's own sign-in button once the GSI script has loaded — only
-  // relevant on the Super Admin tab, and only while we're not already mid-OTP.
+  // Renders Google's own sign-in button once the GSI script has loaded, on
+  // whichever tab is active — skipped while mid-OTP (Super Admin only).
   useEffect(() => {
-    if (role !== "super_admin" || pendingAdminId || !GOOGLE_CLIENT_ID) return;
+    if (pendingAdminId || !GOOGLE_CLIENT_ID) return;
     let cancelled = false;
     function render() {
       if (cancelled || !window.google || !googleButtonRef.current) return;
       googleButtonRef.current.innerHTML = "";
+      const isDark = document.documentElement.getAttribute("data-theme") === "dark";
       window.google.accounts.id.initialize({
         client_id: GOOGLE_CLIENT_ID as string,
-        callback: (resp) => handleGoogleCredential(resp.credential),
+        callback: (resp) => handleGoogleCredential(role, resp.credential),
       });
       window.google.accounts.id.renderButton(googleButtonRef.current, {
-        theme: "outline",
+        theme: isDark ? "filled_black" : "outline",
         size: "large",
-        width: 320,
+        shape: "pill",
+        width: googleButtonRef.current.clientWidth || 320,
       });
     }
     if (window.google) render();
@@ -408,10 +419,10 @@ export default function Login() {
                 {loading && <span className="spinner" />}
                 {loading ? "Signing in…" : "Sign in"}
               </button>
-              {role === "super_admin" && GOOGLE_CLIENT_ID && (
-                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "0.6rem", marginTop: "0.2rem" }}>
-                  <span className="brand-sub" style={{ fontSize: "0.75rem" }}>or</span>
-                  <div ref={googleButtonRef} />
+              {GOOGLE_CLIENT_ID && (
+                <div className="google-btn-wrap">
+                  <div className="or-divider"><span>or</span></div>
+                  <div ref={googleButtonRef} className="google-btn-target" />
                 </div>
               )}
             </form>
