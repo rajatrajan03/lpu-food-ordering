@@ -43,6 +43,7 @@ model Stall {
   block         String
   area          String?
   status        StallStatus @default(active)
+  nightOpen     Boolean     @default(false) @map("night_open")
   openingHours  Json?       @map("opening_hours")
   pickupNote    String?     @map("pickup_note")
   createdAt     DateTime    @default(now()) @map("created_at")

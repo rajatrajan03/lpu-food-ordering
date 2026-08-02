@@ -45,6 +45,7 @@ adminRouter.get(
 const updateStallSchema = z.object({
   name: z.string().optional(),
   status: z.enum(["active", "paused"]).optional(),
+  nightOpen: z.boolean().optional(),
   openingHours: z.record(z.string()).optional(),
   pickupNote: z.string().optional(),
 });
@@ -56,6 +57,27 @@ adminRouter.patch(
     if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
     const stall = await prisma.stall.update({ where: { id: req.params.stallId }, data: parsed.data });
     res.json(stall);
+  }),
+);
+
+const bulkStatusSchema = z.object({
+  stallIds: z.array(z.string()).optional(), // omit to apply to every stall
+  status: z.enum(["active", "paused"]),
+});
+
+// Bulk pause/resume — used by the "Pause all" / "Resume all" toolbar action,
+// a single updateMany instead of the dashboard looping one PATCH per stall.
+adminRouter.post(
+  "/stalls/bulk-status",
+  asyncHandler(async (req, res) => {
+    const parsed = bulkStatusSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
+    const { stallIds, status } = parsed.data;
+    const result = await prisma.stall.updateMany({
+      where: stallIds ? { id: { in: stallIds } } : {},
+      data: { status },
+    });
+    res.json({ updated: result.count });
   }),
 );
 

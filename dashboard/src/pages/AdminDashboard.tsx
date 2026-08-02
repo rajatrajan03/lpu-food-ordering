@@ -9,6 +9,7 @@ import {
   LayoutGrid,
   List,
   MapPin,
+  Moon,
   PauseCircle,
   Play,
   Receipt,
@@ -31,6 +32,7 @@ interface Stall {
   block: string;
   area: string | null;
   status: string;
+  nightOpen: boolean;
   pickupNote: string | null;
   owners: { id: string; name: string; phone: string }[];
 }
@@ -146,6 +148,30 @@ export default function AdminDashboard() {
     }
   }
 
+  async function toggleStallNightOpen(stall: Stall) {
+    const nextNightOpen = !stall.nightOpen;
+    setStalls((prev) => prev?.map((s) => (s.id === stall.id ? { ...s, nightOpen: nextNightOpen } : s)) ?? null);
+    try {
+      await api(`/api/admin/stalls/${stall.id}`, { method: "PATCH", body: { nightOpen: nextNightOpen } });
+    } catch (err) {
+      setStalls((prev) => prev?.map((s) => (s.id === stall.id ? { ...s, nightOpen: stall.nightOpen } : s)) ?? null);
+      setError(err instanceof Error ? err.message : "Could not update night-hours setting.");
+    }
+  }
+
+  async function bulkSetStallStatus(status: "active" | "paused") {
+    const label = status === "paused" ? "pause" : "resume";
+    if (!window.confirm(`${label === "pause" ? "Pause" : "Resume"} every stall? This affects all ${stalls?.length ?? 0} stalls.`)) return;
+    const previous = stalls;
+    setStalls((prev) => prev?.map((s) => ({ ...s, status })) ?? null);
+    try {
+      await api("/api/admin/stalls/bulk-status", { method: "POST", body: { status } });
+    } catch (err) {
+      setStalls(previous);
+      setError(err instanceof Error ? err.message : `Could not ${label} all stalls.`);
+    }
+  }
+
   const navItems = NAV_ITEMS.map((item) =>
     item.key === "categories" ? { ...item, badge: unmapped?.length ?? 0 } : item,
   );
@@ -161,6 +187,8 @@ export default function AdminDashboard() {
           insights={insights}
           onChanged={refreshAll}
           onToggleStatus={toggleStallStatus}
+          onToggleNightOpen={toggleStallNightOpen}
+          onBulkStatus={bulkSetStallStatus}
           onSavedStall={(updated) =>
             setStalls((prev) => prev?.map((s) => (s.id === updated.id ? { ...s, ...updated } : s)) ?? null)
           }
@@ -419,12 +447,16 @@ function StallsTab({
   insights,
   onChanged,
   onToggleStatus,
+  onToggleNightOpen,
+  onBulkStatus,
   onSavedStall,
 }: {
   stalls: Stall[] | null;
   insights: Record<string, StallInsight>;
   onChanged: () => void;
   onToggleStatus: (stall: Stall) => void;
+  onToggleNightOpen: (stall: Stall) => void;
+  onBulkStatus: (status: "active" | "paused") => void;
   onSavedStall: (updated: Stall) => void;
 }) {
   const [query, setQuery] = useState("");
@@ -466,6 +498,14 @@ function StallsTab({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
+        </div>
+        <div className="row" style={{ gap: "0.5rem" }}>
+          <button className="ghost small" onClick={() => onBulkStatus("paused")}>
+            <PauseCircle size={14} strokeWidth={2} /> Pause all
+          </button>
+          <button className="ghost small" onClick={() => onBulkStatus("active")}>
+            <Play size={14} strokeWidth={2} /> Resume all
+          </button>
         </div>
         <div className="view-toggle">
           <button
@@ -512,6 +552,7 @@ function StallsTab({
               index={i}
               onOpen={() => setSelectedId(s.id)}
               onToggleStatus={() => onToggleStatus(s)}
+              onToggleNightOpen={() => onToggleNightOpen(s)}
             />
           ))}
         </div>
@@ -563,6 +604,7 @@ function StallsTab({
             insight={insights[selected.id]}
             onClose={() => setSelectedId(null)}
             onToggleStatus={() => onToggleStatus(selected)}
+            onToggleNightOpen={() => onToggleNightOpen(selected)}
             onSaved={(updated) => {
               onSavedStall(updated);
               onChanged();
@@ -580,12 +622,14 @@ function StallCard({
   index,
   onOpen,
   onToggleStatus,
+  onToggleNightOpen,
 }: {
   stall: Stall;
   insight: StallInsight | undefined;
   index: number;
   onOpen: () => void;
   onToggleStatus: () => void;
+  onToggleNightOpen: () => void;
 }) {
   const isActive = stall.status === "active";
   return (
@@ -614,7 +658,11 @@ function StallCard({
       <div className="stall-card-badges">
         {insight?.primaryCategory && <span className="chip">{insight.primaryCategory}</span>}
         <span className="chip"><UtensilsCrossed size={11} strokeWidth={2} /> {insight?.menuItemCount ?? "—"} items</span>
-        <span className="chip"><Star size={11} strokeWidth={2} /> No ratings yet</span>
+        {stall.nightOpen ? (
+          <span className="chip"><Moon size={11} strokeWidth={2} /> Night open</span>
+        ) : (
+          <span className="chip"><Star size={11} strokeWidth={2} /> No ratings yet</span>
+        )}
       </div>
 
       <div className="stall-card-metrics">
@@ -632,16 +680,28 @@ function StallCard({
         <span className="muted">
           {stall.owners.length > 0 ? stall.owners.map((o) => o.name).join(", ") : "Unassigned"}
         </span>
-        <button
-          className="ghost small"
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleStatus();
-          }}
-        >
-          {isActive ? <PauseCircle size={14} strokeWidth={2} /> : <Play size={14} strokeWidth={2} />}
-          {isActive ? "Pause" : "Resume"}
-        </button>
+        <div className="row" style={{ gap: "0.4rem" }}>
+          <button
+            className={`ghost small${stall.nightOpen ? " active" : ""}`}
+            title={stall.nightOpen ? "Serves late night — tap to unmark" : "Mark as open late at night"}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleNightOpen();
+            }}
+          >
+            <Moon size={14} strokeWidth={2} />
+          </button>
+          <button
+            className="ghost small"
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleStatus();
+            }}
+          >
+            {isActive ? <PauseCircle size={14} strokeWidth={2} /> : <Play size={14} strokeWidth={2} />}
+            {isActive ? "Pause" : "Resume"}
+          </button>
+        </div>
       </div>
     </motion.div>
   );
@@ -652,12 +712,14 @@ function StallDetailPanel({
   insight,
   onClose,
   onToggleStatus,
+  onToggleNightOpen,
   onSaved,
 }: {
   stall: Stall;
   insight: StallInsight | undefined;
   onClose: () => void;
   onToggleStatus: () => void;
+  onToggleNightOpen: () => void;
   onSaved: (updated: Stall) => void;
 }) {
   const [name, setName] = useState(stall.name);
@@ -733,6 +795,16 @@ function StallDetailPanel({
             <span className={`pill ${stall.status === "active" ? "active" : "paused"}`}>{stall.status}</span>
             <button className="small" onClick={onToggleStatus}>
               {stall.status === "active" ? "Pause stall" : "Resume stall"}
+            </button>
+          </div>
+
+          <div className="row between" style={{ marginTop: "0.6rem" }}>
+            <span className="row" style={{ gap: "0.4rem" }}>
+              <Moon size={14} strokeWidth={2} className="muted" />
+              <span className="muted">Open late at night</span>
+            </span>
+            <button className="small" onClick={onToggleNightOpen}>
+              {stall.nightOpen ? "Remove night hours" : "Mark night open"}
             </button>
           </div>
 

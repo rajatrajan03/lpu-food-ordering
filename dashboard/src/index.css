@@ -169,6 +169,7 @@ button.secondary:hover:not(:disabled) { background: #0c8449; border-color: #0c84
 button.danger { background: var(--danger); color: white; border-color: var(--danger); }
 button.ghost { background: transparent; border-color: transparent; color: var(--muted); font-weight: 500; box-shadow: none; }
 button.ghost:hover:not(:disabled) { background: var(--line); color: var(--ink); transform: none; box-shadow: none; }
+button.ghost.active { background: var(--accent-soft); color: var(--accent); }
 button.small { padding: 0.36rem 0.75rem; font-size: 0.8rem; }
 button.big { padding: 0.75rem 1.3rem; font-size: 0.95rem; border-radius: 10px; }
 button:disabled { opacity: 0.5; cursor: not-allowed; transform: none !important; }

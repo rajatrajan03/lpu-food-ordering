@@ -1,5 +1,13 @@
 import { prisma } from "../lib/prisma";
 
+/** Night window is 10 PM–6 AM IST — outside that, every active stall is eligible regardless of nightOpen. */
+function isNightTimeIST(): boolean {
+  const now = new Date();
+  const istMinutes = (now.getUTCHours() * 60 + now.getUTCMinutes() + 330) % 1440; // UTC+5:30
+  const istHour = Math.floor(istMinutes / 60);
+  return istHour >= 22 || istHour < 6;
+}
+
 export async function searchMenu(params: {
   query?: string;
   stallId?: string;
@@ -15,22 +23,23 @@ export async function searchMenu(params: {
   // enough to not blow Groq's free-tier tokens-per-minute budget on the next turn.
   const { query, stallId, categoryName, vegOnly, area, block, limit = 8, offset = 0 } = params;
 
+  const isNight = isNightTimeIST();
   return prisma.menuItem.findMany({
     where: {
       available: true,
       ...(stallId ? { stallId } : {}),
       ...(vegOnly ? { isVeg: true } : {}),
-      // contains/insensitive, not exact-match — the model's phrasing of an
-      // area ("cc", "CC Block", "near cc") varies, and an exact match against
-      // the stored value silently returns zero results on any mismatch.
-      ...(area || block
-        ? {
-            stall: {
-              ...(area ? { area: { contains: area, mode: "insensitive" } } : {}),
-              ...(block ? { block: { contains: block, mode: "insensitive" } } : {}),
-            },
-          }
-        : {}),
+      // A stall's own status/night-hours gate whether its items show up at
+      // all, on top of any area/block the caller asked for. contains/
+      // insensitive (not exact-match) for area/block — the model's phrasing
+      // ("cc", "CC Block", "near cc") varies, and an exact match against the
+      // stored value silently returns zero results on any mismatch.
+      stall: {
+        status: "active",
+        ...(isNight ? { nightOpen: true } : {}),
+        ...(area ? { area: { contains: area, mode: "insensitive" } } : {}),
+        ...(block ? { block: { contains: block, mode: "insensitive" } } : {}),
+      },
       ...(query
         ? {
             OR: [
@@ -68,6 +77,7 @@ export async function listStalls(
   return prisma.stall.findMany({
     where: {
       status: "active",
+      ...(isNightTimeIST() ? { nightOpen: true } : {}),
       ...(area ? { area: { contains: area, mode: "insensitive" } } : {}),
       ...(block ? { block: { contains: block, mode: "insensitive" } } : {}),
       ...(query ? { name: { contains: query, mode: "insensitive" } } : {}),
