@@ -253,7 +253,10 @@ export async function handleIncomingMessage(whatsappNumber: string, text: string
   const student = await findOrCreateStudent(whatsappNumber);
   const session = getSessionState(student.sessionState);
 
-  if (session.recentMessages.length === 0 && GREETING_PATTERN.test(text.trim())) {
+  // Trigger on any bare greeting, not just the very first message ever —
+  // otherwise "hi" sent mid-conversation just continues whatever topic was
+  // last discussed instead of giving a fresh start, which reads as broken.
+  if (GREETING_PATTERN.test(text.trim())) {
     await sendWhatsAppButtons(whatsappNumber, GREETING_TEXT, [
       { id: "browse_stalls", title: "Browse stalls" },
       { id: "track_order", title: "Track my order" },
