@@ -64,6 +64,7 @@ adminRouter.patch(
 const createOwnerSchema = z.object({
   name: z.string().min(1),
   phone: z.string().min(5),
+  email: z.string().email().optional().or(z.literal("")),
   password: z.string().min(6),
   stallIds: z.array(z.string()).min(1),
 });
@@ -73,11 +74,17 @@ adminRouter.post(
   asyncHandler(async (req, res) => {
     const parsed = createOwnerSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
-    const { name, phone, password, stallIds } = parsed.data;
+    const { name, phone, email, password, stallIds } = parsed.data;
 
     const passwordHash = await bcrypt.hash(password, 10);
     const owner = await prisma.stallOwner.create({
-      data: { name, phone, passwordHash, stalls: { connect: stallIds.map((id) => ({ id })) } },
+      data: {
+        name,
+        phone,
+        email: email ? email : undefined,
+        passwordHash,
+        stalls: { connect: stallIds.map((id) => ({ id })) },
+      },
       include: { stalls: true },
     });
     res.status(201).json(owner);

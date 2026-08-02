@@ -1012,6 +1012,7 @@ function CategoriesTab({
 function AssignOwnerForm({ stalls, onAssigned }: { stalls: Stall[]; onAssigned: () => void }) {
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [stallId, setStallId] = useState("");
   const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
@@ -1024,11 +1025,12 @@ function AssignOwnerForm({ stalls, onAssigned }: { stalls: Stall[]; onAssigned: 
     try {
       await api("/api/admin/owners", {
         method: "POST",
-        body: { name, phone, password, stallIds: [stallId] },
+        body: { name, phone, email: email || undefined, password, stallIds: [stallId] },
       });
       setStatus({ ok: true, text: `Owner login created for ${name}.` });
       setName("");
       setPhone("");
+      setEmail("");
       setPassword("");
       setStallId("");
       onAssigned();
@@ -1064,6 +1066,15 @@ function AssignOwnerForm({ stalls, onAssigned }: { stalls: Stall[]; onAssigned: 
           <div className="field">
             <label>Phone number</label>
             <input placeholder="e.g. 9876543210" value={phone} onChange={(e) => setPhone(e.target.value)} required />
+          </div>
+          <div className="field">
+            <label>Email (optional — needed for Google sign-in)</label>
+            <input
+              type="email"
+              placeholder="owner@example.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
           </div>
           <div className="field">
             <label>Temporary password</label>
