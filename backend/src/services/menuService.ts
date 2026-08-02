@@ -48,9 +48,15 @@ export async function getStallInfo(stallId: string) {
   });
 }
 
-export async function listStalls(params: { area?: string; block?: string } = {}) {
+export async function listStalls(params: { area?: string; block?: string; query?: string } = {}) {
+  const { area, block, query } = params;
   return prisma.stall.findMany({
-    where: { status: "active", ...params },
+    where: {
+      status: "active",
+      ...(area ? { area } : {}),
+      ...(block ? { block } : {}),
+      ...(query ? { name: { contains: query, mode: "insensitive" } } : {}),
+    },
     orderBy: { name: "asc" },
   });
 }

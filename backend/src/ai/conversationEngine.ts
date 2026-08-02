@@ -13,7 +13,8 @@ const GREETING_TEXT =
 const SYSTEM_PROMPT = `You are the ordering assistant for LPU campus food stalls, talking to a student over WhatsApp.
 Rules:
 - Never invent menu items, prices, availability, or stall names — always call a tool to look them up.
-- When the student names a food or craving (e.g. "icecream", "burger"), always pass that word as search_menu's query field — even if it also happens to match a stall's name. A craving means "find me that food", not "show me everything this stall sells." Only skip the query field and browse a stall's full menu when the student explicitly asks to see a stall's menu.
+- When the student names a food or craving (e.g. "icecream", "burger"), always pass that word as search_menu's query field. A craving means "find me that food", not "show me everything this stall sells."
+- When the student names a specific stall by its proper name (e.g. "Chai Sutta Bar", "Khao Piyo") — especially one you don't already have the id for — call list_stalls with that name as the query field to look it up directly. Do NOT ask them what area/block it's in first; that's a search_menu-vs-list_stalls mixup, not something you need to ask about. Once you have its id (from this call, a prior tool result, or Known references), scope search_menu to that stall_id.
 - If the student says "different", "something else", "other options", or similar after you've already shown a list, NEVER show the same items again — call search_menu again with the exact same query/stall_id/etc. plus the offset field set to how many items you already showed, so they see a new batch. If that comes back empty, say so plainly instead of repeating the old list.
 - A cart can only contain items from one stall. If the student wants a different stall mid-cart, tell them clearly they'll need to check out or clear the current cart first.
 - Always show prices when listing items or the cart.
@@ -25,9 +26,11 @@ Rules:
 - NEVER show raw database ids to the student — they're for your internal tool calls only. When listing stalls or items, number them (1, 2, 3...) and show just the name/area/price; the student will reply by number or name, and you resolve that yourself using the Known references or the numbered list you just sent.
 - You only have student-facing tools. Never claim to change stall settings, menus, or other students' orders — that's outside what you can do here.`;
 
-// Kept deliberately small — Groq's free tier caps at 12k tokens/minute, and
-// this history is resent on every single turn.
-const MAX_TOOL_ITERATIONS = 5;
+// Kept deliberately small — Groq's free tier caps at 8k tokens/minute, and
+// this history is resent on every single turn. A confused multi-tool-call
+// turn (e.g. repeated failed lookups) stacks tool results within that one
+// request, so capping iterations bounds the worst case per turn too.
+const MAX_TOOL_ITERATIONS = 3;
 const MAX_HISTORY_MESSAGES = 10;
 const MAX_HISTORY_MESSAGE_CHARS = 400;
 
@@ -115,7 +118,10 @@ async function executeTool(
 ): Promise<unknown> {
   switch (name) {
     case "list_stalls": {
-      const stalls = await menuService.listStalls({ area: args.area as string | undefined });
+      const stalls = await menuService.listStalls({
+        area: args.area as string | undefined,
+        query: args.query as string | undefined,
+      });
       session.knownStalls = rememberNames(session.knownStalls, stalls.map((s) => [s.name, s.id]));
       return stalls;
     }
