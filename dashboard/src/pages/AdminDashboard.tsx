@@ -20,6 +20,7 @@ import {
   Timer,
   TrendingUp,
   UserX,
+  Users,
   UtensilsCrossed,
   X,
 } from "lucide-react";
@@ -88,9 +89,22 @@ const NAV_ITEMS: NavItem[] = [
   { key: "stalls", label: "Stalls", icon: Store },
   { key: "categories", label: "Category review", icon: Tags },
   { key: "owners", label: "Assign owners", icon: KeyRound },
+  { key: "students", label: "Students", icon: Users },
 ];
 
-type Tab = "overview" | "stalls" | "categories" | "owners";
+type Tab = "overview" | "stalls" | "categories" | "owners" | "students";
+
+interface StudentRow {
+  id: string;
+  whatsappNumber: string;
+  name: string | null;
+  registrationNumber: string | null;
+  preferredLanguage: string;
+  isActive: boolean;
+  createdAt: string;
+  lastSeen: string;
+  _count: { orders: number };
+}
 
 export default function AdminDashboard() {
   const [tab, setTab] = useState<Tab>("overview");
@@ -100,7 +114,19 @@ export default function AdminDashboard() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [activity, setActivity] = useState<ActivityItem[] | null>(null);
   const [insights, setInsights] = useState<Record<string, StallInsight>>({});
+  const [students, setStudents] = useState<StudentRow[] | null>(null);
+  const [studentTotal, setStudentTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (tab !== "students") return;
+    api<{ students: StudentRow[]; total: number }>("/api/admin/students?limit=100")
+      .then((data) => {
+        setStudents(data.students);
+        setStudentTotal(data.total);
+      })
+      .catch((e) => setError(e.message));
+  }, [tab]);
 
   const refreshAll = useCallback(() => {
     setError(null);
@@ -198,7 +224,96 @@ export default function AdminDashboard() {
         <CategoriesTab unmapped={unmapped} categories={categories} onAssign={assignCategory} />
       )}
       {tab === "owners" && <AssignOwnerForm stalls={stalls ?? []} onAssigned={refreshAll} />}
+      {tab === "students" && <StudentsTab students={students} total={studentTotal} />}
     </Shell>
+  );
+}
+
+function StudentsTab({ students, total }: { students: StudentRow[] | null; total: number }) {
+  const [query, setQuery] = useState("");
+
+  const filtered = useMemo(() => {
+    if (!students) return null;
+    const q = query.trim().toLowerCase();
+    if (!q) return students;
+    return students.filter(
+      (s) =>
+        (s.name ?? "").toLowerCase().includes(q) ||
+        (s.registrationNumber ?? "").toLowerCase().includes(q) ||
+        s.whatsappNumber.includes(q),
+    );
+  }, [students, query]);
+
+  const onboardedCount = students?.filter((s) => s.name && s.registrationNumber).length ?? 0;
+
+  return (
+    <>
+      <PageHead title="Students" subtitle="Everyone who has messaged the WhatsApp ordering assistant." />
+
+      <div className="stat-row">
+        <StatCard icon={Users} label="Total students" tone="accent" value={students ? total : <Skeleton width={40} height={28} />} />
+        <StatCard icon={CheckCircle2} label="Onboarding complete" tone="success" value={students ? onboardedCount : <Skeleton width={40} height={28} />} />
+        <StatCard icon={UserX} label="Mid-onboarding" tone="warn" value={students ? (students.length - onboardedCount) : <Skeleton width={40} height={28} />} />
+      </div>
+
+      <div className="search-wrap" style={{ margin: "0 0 1rem" }}>
+        <span className="search-icon"><Search size={15} strokeWidth={2} /></span>
+        <input
+          aria-label="Search students"
+          placeholder="Search by name, registration number, or WhatsApp number…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      </div>
+
+      {!students && (
+        <div className="card" style={{ padding: 0 }}>
+          <div style={{ padding: "1.2rem" }}><Skeleton height={18} width="40%" /></div>
+        </div>
+      )}
+
+      {students && filtered && filtered.length === 0 && (
+        <div className="card"><EmptyState icon={Users} text={query ? `No students match "${query}"` : "No students yet — they'll appear here after their first WhatsApp message."} /></div>
+      )}
+
+      {students && filtered && filtered.length > 0 && (
+        <div className="card" style={{ padding: 0 }}>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Registration #</th>
+                  <th>WhatsApp</th>
+                  <th>Orders</th>
+                  <th>Last seen</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((s) => {
+                  const onboarded = Boolean(s.name && s.registrationNumber);
+                  return (
+                    <tr key={s.id}>
+                      <td style={{ fontWeight: 600 }}>{s.name ?? <span className="muted">(not set)</span>}</td>
+                      <td className="muted">{s.registrationNumber ?? <span className="muted">(not set)</span>}</td>
+                      <td className="muted">{s.whatsappNumber}</td>
+                      <td>{s._count.orders}</td>
+                      <td className="muted">{relativeTime(s.lastSeen)}</td>
+                      <td>
+                        <span className={`pill ${onboarded ? "active" : "paused"}`}>
+                          {onboarded ? "onboarded" : "mid-onboarding"}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 

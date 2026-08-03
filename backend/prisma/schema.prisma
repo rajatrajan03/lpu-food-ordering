@@ -23,14 +23,20 @@ enum StallStatus {
 }
 
 model Student {
-  id             String   @id @default(uuid())
-  whatsappNumber String   @unique @map("whatsapp_number")
-  name           String?
+  id                 String   @id @default(uuid())
+  whatsappNumber     String   @unique @map("whatsapp_number")
+  name               String?
+  // Stored as given at onboarding — never validated/verified against any
+  // university system, per product decision. Null until onboarding completes.
+  registrationNumber String?  @map("registration_number")
+  preferredLanguage  String   @default("en") @map("preferred_language")
   // Draft cart, active stall context, and short rolling conversation window.
   // Kept as JSON because it's read/written as a whole per turn, not queried by field.
-  sessionState   Json?    @map("session_state")
-  createdAt      DateTime @default(now()) @map("created_at")
-  lastActiveAt   DateTime @default(now()) @map("last_active_at")
+  sessionState       Json?    @map("session_state")
+  isActive           Boolean  @default(true) @map("is_active")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+  lastSeen           DateTime @default(now()) @map("last_seen")
 
   orders Order[]
 

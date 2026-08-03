@@ -4,7 +4,8 @@ import { toolDefinitions, emptySessionState, rememberNames, type SessionState, t
 import { prisma } from "../lib/prisma";
 import * as menuService from "../services/menuService";
 import * as orderService from "../services/orderService";
-import { sendWhatsAppButtons, sendWhatsAppList, type ListRow } from "../whatsapp/client";
+import * as studentService from "../services/studentService";
+import { sendWhatsAppText, sendWhatsAppButtons, sendWhatsAppList, type ListRow } from "../whatsapp/client";
 
 // Gemini's function-calling format wants {name, description, parametersJsonSchema}
 // rather than the OpenAI-style {type:"function", function:{...}} shape the tool
@@ -128,14 +129,6 @@ function knownReferencesText(session: SessionState): string {
   if (hasItems) parts.push(`Items (name -> id): ${JSON.stringify(session.knownItems)}`);
   if (hasSlots) parts.push(`Pickup slots (time range -> id): ${JSON.stringify(session.knownSlots)}`);
   return parts.join("\n");
-}
-
-async function findOrCreateStudent(whatsappNumber: string) {
-  return prisma.student.upsert({
-    where: { whatsappNumber },
-    update: { lastActiveAt: new Date() },
-    create: { whatsappNumber, sessionState: emptySessionState() as unknown as object },
-  });
 }
 
 /** Formats a Prisma @db.Time value (returned as a Date on 1970-01-01) as "9:00 AM". */
@@ -355,7 +348,35 @@ async function executeTool(
  * buttons) — the caller should not send anything further for that turn.
  */
 export async function handleIncomingMessage(whatsappNumber: string, text: string): Promise<string | null> {
-  const student = await findOrCreateStudent(whatsappNumber);
+  const { student: found, isNewStudent } = await studentService.findOrCreateStudent(whatsappNumber);
+  let student = found;
+
+  // Three-step onboarding gate, driven entirely by what's still missing on
+  // the row rather than a separate transient "step" flag — resilient to a
+  // student going quiet mid-onboarding and coming back days later; whichever
+  // field is still null tells us exactly what this message is answering.
+  if (isNewStudent) {
+    await sendWhatsAppText(whatsappNumber, studentService.WELCOME_TEXT);
+    return null;
+  }
+  if (!student.registrationNumber) {
+    await studentService.saveRegistrationNumber(student.id, text);
+    await sendWhatsAppText(whatsappNumber, studentService.ASK_NAME_TEXT);
+    return null;
+  }
+  if (!student.name) {
+    student = await studentService.saveName(student.id, text);
+    await studentService.touchLastSeen(student.id);
+    await sendWhatsAppText(whatsappNumber, studentService.onboardedConfirmationText(student.name!));
+    return null;
+  }
+
+  // Fully onboarded — compute the return greeting from the *previous* visit
+  // before touching lastSeen, then record this visit.
+  const returnGreeting = studentService.greetingForReturn(student.lastSeen, student.name);
+  await studentService.touchLastSeen(student.id);
+  if (returnGreeting) await sendWhatsAppText(whatsappNumber, returnGreeting);
+
   const session = getSessionState(student.sessionState);
 
   // Trigger on any bare greeting, not just the very first message ever —
@@ -378,7 +399,8 @@ export async function handleIncomingMessage(whatsappNumber: string, text: string
     return null;
   }
 
-  const systemInstruction = SYSTEM_PROMPT + knownReferencesText(session);
+  const nameContext = student.name ? `\n\nThe student's name is ${student.name} — you may address them by name occasionally (e.g. in a greeting), but don't overuse it.` : "";
+  const systemInstruction = SYSTEM_PROMPT + nameContext + knownReferencesText(session);
   const contents: Content[] = [
     ...session.recentMessages.map((m) => ({
       role: m.role === "assistant" ? "model" : "user",

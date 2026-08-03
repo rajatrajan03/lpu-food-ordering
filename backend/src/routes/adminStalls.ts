@@ -5,6 +5,7 @@ import { prisma } from "../lib/prisma";
 import { requireAuth } from "../lib/auth";
 import { asyncHandler } from "../lib/asyncHandler";
 import { getOverview, getRecentActivity, getStallInsights } from "../services/analyticsService";
+import { listStudents, countStudents } from "../services/studentService";
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth("super_admin"));
@@ -189,5 +190,18 @@ adminRouter.patch(
     if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
     const item = await prisma.menuItem.update({ where: { id: req.params.itemId }, data: parsed.data });
     res.json(item);
+  }),
+);
+
+// ---- Students (WhatsApp onboarding) — read-only: registration numbers are
+// stored as given at onboarding and never edited from here. ----
+
+adminRouter.get(
+  "/students",
+  asyncHandler(async (req, res) => {
+    const limit = Math.min(Number(req.query.limit) || 50, 100);
+    const offset = Number(req.query.offset) || 0;
+    const [students, total] = await Promise.all([listStudents({ limit, offset }), countStudents()]);
+    res.json({ students, total });
   }),
 );
