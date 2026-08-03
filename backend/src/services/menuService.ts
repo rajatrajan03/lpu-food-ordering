@@ -63,6 +63,43 @@ export async function searchMenu(params: {
   });
 }
 
+/** Distinct campus areas with at least one active, currently-eligible stall — powers the "Other Location" list. */
+export async function listDistinctAreas(): Promise<string[]> {
+  const stalls = await prisma.stall.findMany({
+    where: { status: "active", area: { not: null }, ...(isNightTimeIST() ? { nightOpen: true } : {}) },
+    select: { area: true },
+    distinct: ["area"],
+    orderBy: { area: "asc" },
+  });
+  return stalls.map((s) => s.area!).filter(Boolean);
+}
+
+/**
+ * Stalls in (or near) `area` that currently have every one of `itemNames`
+ * available — the "usual order, but which stall still has all of it" check.
+ * Matching is by item name since a "usual order" is remembered by name, not
+ * by a stall-specific menu item id.
+ */
+export async function findStallsWithAllItems(area: string, itemNames: string[]) {
+  if (itemNames.length === 0) return [];
+  const isNight = isNightTimeIST();
+  const candidates = await prisma.stall.findMany({
+    where: {
+      status: "active",
+      ...(isNight ? { nightOpen: true } : {}),
+      area: { contains: area, mode: "insensitive" },
+    },
+    include: {
+      items: { where: { available: true, name: { in: itemNames } }, select: { name: true } },
+    },
+  });
+  const wanted = new Set(itemNames.map((n) => n.toLowerCase()));
+  return candidates.filter((stall) => {
+    const has = new Set(stall.items.map((i) => i.name.toLowerCase()));
+    return [...wanted].every((n) => has.has(n));
+  });
+}
+
 export async function getStallInfo(stallId: string) {
   return prisma.stall.findUnique({
     where: { id: stallId },

@@ -88,6 +88,13 @@ export async function listStudents(params: { limit?: number; offset?: number } =
       createdAt: true,
       lastSeen: true,
       _count: { select: { orders: true } },
+      preference: {
+        select: {
+          favoriteMealPeriod: true,
+          ordersAnalyzed: true,
+          favoriteStall: { select: { name: true } },
+        },
+      },
     },
   });
 }

@@ -104,6 +104,11 @@ interface StudentRow {
   createdAt: string;
   lastSeen: string;
   _count: { orders: number };
+  preference: {
+    favoriteMealPeriod: string | null;
+    ordersAnalyzed: number;
+    favoriteStall: { name: string } | null;
+  } | null;
 }
 
 export default function AdminDashboard() {
@@ -286,6 +291,8 @@ function StudentsTab({ students, total }: { students: StudentRow[] | null; total
                   <th>Registration #</th>
                   <th>WhatsApp</th>
                   <th>Orders</th>
+                  <th>Favorite stall</th>
+                  <th>Usual meal</th>
                   <th>Last seen</th>
                   <th>Status</th>
                 </tr>
@@ -299,6 +306,8 @@ function StudentsTab({ students, total }: { students: StudentRow[] | null; total
                       <td className="muted">{s.registrationNumber ?? <span className="muted">(not set)</span>}</td>
                       <td className="muted">{s.whatsappNumber}</td>
                       <td>{s._count.orders}</td>
+                      <td className="muted">{s.preference?.favoriteStall?.name ?? <span className="muted">—</span>}</td>
+                      <td className="muted" style={{ textTransform: "capitalize" }}>{s.preference?.favoriteMealPeriod ?? "—"}</td>
                       <td className="muted">{relativeTime(s.lastSeen)}</td>
                       <td>
                         <span className={`pill ${onboarded ? "active" : "paused"}`}>

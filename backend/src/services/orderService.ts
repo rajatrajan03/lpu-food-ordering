@@ -1,6 +1,7 @@
 import { prisma } from "../lib/prisma";
 import { OrderStatus } from "@prisma/client";
 import { sendWhatsAppText } from "../whatsapp/client";
+import { recomputeStudentPreferences } from "./preferenceService";
 
 export class OrderError extends Error {}
 
@@ -166,6 +167,14 @@ export async function transitionOrderStatus(
     return tx.order.update({ where: { id: orderId }, data: { status: nextStatus } });
   }).then((order) => {
     notifyStudentOfStatus(order);
+    // Learned preferences (favorite stall/meal-period/usual order) are only
+    // ever built from orders that actually completed — a placed-then-rejected
+    // order shouldn't shape future suggestions.
+    if (order.status === "completed") {
+      recomputeStudentPreferences(order.studentId).catch((err) =>
+        console.error("Failed to recompute student preferences:", err),
+      );
+    }
     return order;
   });
 }

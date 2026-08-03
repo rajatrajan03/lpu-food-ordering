@@ -189,6 +189,23 @@ export interface SessionState {
   // "9:00 AM – 9:15 AM") so a typed-back or tapped time resolves to the real
   // slot id without re-calling get_pickup_slots.
   knownSlots: Record<string, string>;
+  // Present only while the "suggest my usual order" wizard is mid-flight —
+  // a deterministic multi-step UI (confirm -> pickup location -> stall pick)
+  // that intentionally bypasses the AI loop, the same way onboarding does,
+  // since the buttons/lists at each step must reflect exact DB state.
+  smartFlow?: SmartFlowState;
+}
+
+export interface UsualItemRef {
+  itemName: string;
+  quantity: number;
+}
+
+export interface SmartFlowState {
+  stage: "awaiting_usual_confirm" | "awaiting_pickup_location" | "awaiting_area_pick" | "awaiting_stall";
+  usualItems: UsualItemRef[];
+  preferredArea?: string;
+  matchedStalls?: { id: string; name: string; block: string }[];
 }
 
 const MAX_KNOWN_ENTRIES = 30;

@@ -1,10 +1,19 @@
 import type { Content, Part } from "@google/genai";
 import { genAI, GEMINI_MODEL } from "./geminiClient";
-import { toolDefinitions, emptySessionState, rememberNames, type SessionState, type CartLine } from "./tools";
+import {
+  toolDefinitions,
+  emptySessionState,
+  rememberNames,
+  type SessionState,
+  type CartLine,
+  type SmartFlowState,
+  type UsualItemRef,
+} from "./tools";
 import { prisma } from "../lib/prisma";
 import * as menuService from "../services/menuService";
 import * as orderService from "../services/orderService";
 import * as studentService from "../services/studentService";
+import * as preferenceService from "../services/preferenceService";
 import { sendWhatsAppText, sendWhatsAppButtons, sendWhatsAppList, type ListRow } from "../whatsapp/client";
 
 // Gemini's function-calling format wants {name, description, parametersJsonSchema}
@@ -89,6 +98,7 @@ function getSessionState(raw: unknown): SessionState {
     knownStalls: s.knownStalls ?? {},
     knownItems: s.knownItems ?? {},
     knownSlots: s.knownSlots ?? {},
+    smartFlow: s.smartFlow,
   };
 }
 
@@ -139,6 +149,191 @@ function formatSlotTime(t: Date): string {
 /** Populated by the get_pickup_slots case so the caller can follow up with a tappable list. */
 interface ToolSideEffects {
   pickupSlotRows?: ListRow[];
+}
+
+// ---------------------------------------------------------------------------
+// Smart Personalized Ordering Flow — a deterministic wizard (not AI tool
+// calls) triggered when a returning student messages during their usual
+// meal period and has a learned "usual order". Kept separate from the
+// tool-calling loop for the same reason onboarding is: each step's buttons
+// must reflect exact DB state (their real preferred area, the real stalls
+// that actually have every item), which the model can't be trusted to get
+// exactly right from free text.
+// ---------------------------------------------------------------------------
+
+const MEAL_PERIOD_LABEL: Record<string, string> = {
+  breakfast: "breakfast",
+  lunch: "lunch",
+  snacks: "snack",
+  dinner: "dinner",
+};
+
+function formatUsualOrder(items: UsualItemRef[]): string {
+  return items.map((i) => `${i.quantity}x ${i.itemName}`).join(", ");
+}
+
+/** True only when it's the student's own usual meal period AND they have a learned "usual order" to offer. */
+async function eligibleForSmartSuggestion(studentId: string): Promise<{ items: UsualItemRef[]; preferredArea: string | null; mealLabel: string } | null> {
+  const pref = await preferenceService.getPreferences(studentId);
+  if (!pref || !pref.usualOrderItems) return null;
+  if (pref.favoriteMealPeriod && pref.favoriteMealPeriod !== preferenceService.currentMealPeriod()) return null;
+  const items = pref.usualOrderItems as unknown as UsualItemRef[];
+  if (!items.length) return null;
+  return {
+    items,
+    preferredArea: pref.preferredArea,
+    mealLabel: pref.favoriteMealPeriod ? MEAL_PERIOD_LABEL[pref.favoriteMealPeriod] : "usual",
+  };
+}
+
+async function startSmartSuggestion(
+  whatsappNumber: string,
+  session: SessionState,
+  suggestion: { items: UsualItemRef[]; preferredArea: string | null; mealLabel: string },
+): Promise<void> {
+  await sendWhatsAppButtons(
+    whatsappNumber,
+    `It's your usual ${suggestion.mealLabel} time! Want your usual — ${formatUsualOrder(suggestion.items)}?`,
+    [
+      { id: "usual_yes", title: "Yes, that's it" },
+      { id: "usual_no", title: "No, something else" },
+    ],
+  );
+  session.smartFlow = {
+    stage: "awaiting_usual_confirm",
+    usualItems: suggestion.items,
+    preferredArea: suggestion.preferredArea ?? undefined,
+  };
+}
+
+async function sendAreaList(whatsappNumber: string): Promise<void> {
+  const areas = await menuService.listDistinctAreas();
+  if (areas.length === 0) {
+    await sendWhatsAppText(whatsappNumber, "No pickup locations are available right now.");
+    return;
+  }
+  await sendWhatsAppList(
+    whatsappNumber,
+    "Pick a campus location:",
+    "Choose location",
+    areas.slice(0, 10).map((a) => ({ id: a, title: a })),
+  );
+}
+
+async function resolveAreaAndShowStalls(
+  whatsappNumber: string,
+  session: SessionState,
+  flow: SmartFlowState,
+  area: string,
+): Promise<void> {
+  const itemNames = flow.usualItems.map((i) => i.itemName);
+  const stalls = await menuService.findStallsWithAllItems(area, itemNames);
+  if (stalls.length === 0) {
+    await sendWhatsAppText(
+      whatsappNumber,
+      `No stall near ${area} has your full usual order right now — want to browse instead? Just tell me what you're craving.`,
+    );
+    session.smartFlow = undefined;
+    return;
+  }
+  flow.matchedStalls = stalls.map((s) => ({ id: s.id, name: s.name, block: s.block }));
+  flow.stage = "awaiting_stall";
+  session.knownStalls = rememberNames(session.knownStalls, stalls.map((s) => [s.name, s.id]));
+  await sendWhatsAppList(
+    whatsappNumber,
+    "These stalls have your full usual order:",
+    "Choose stall",
+    flow.matchedStalls.map((s) => ({ id: s.id, title: s.name, description: s.block })),
+  );
+}
+
+/** Fills the cart from the usual-order item names, re-priced against the chosen stall's current menu. */
+async function buildCartFromUsualOrder(
+  whatsappNumber: string,
+  session: SessionState,
+  stallId: string,
+  usualItems: UsualItemRef[],
+): Promise<void> {
+  const menuItems = await prisma.menuItem.findMany({
+    where: { stallId, available: true, name: { in: usualItems.map((i) => i.itemName) } },
+  });
+  const byName = new Map(menuItems.map((m) => [m.name.toLowerCase(), m]));
+  const cart: CartLine[] = [];
+  for (const u of usualItems) {
+    const item = byName.get(u.itemName.toLowerCase());
+    if (!item) continue; // defensive — findStallsWithAllItems already verified this, but menus can change mid-flow
+    cart.push({ itemId: item.id, itemName: item.name, unitPrice: Number(item.basePrice), quantity: u.quantity });
+  }
+  if (cart.length === 0) {
+    await sendWhatsAppText(whatsappNumber, "Hmm, those items just went unavailable there — tell me what you'd like instead.");
+    return;
+  }
+  session.cart = cart;
+  session.activeStallId = stallId;
+  session.knownItems = rememberNames(session.knownItems, cart.map((c) => [c.itemName, c.itemId]));
+  const total = cart.reduce((sum, l) => sum + l.unitPrice * l.quantity, 0);
+  const lines = cart.map((l) => `${l.quantity}x ${l.itemName} — ₹${l.unitPrice * l.quantity}`).join("\n");
+  await sendWhatsAppText(
+    whatsappNumber,
+    `Added your usual order:\n${lines}\nTotal: ₹${total}\n\nReply to add more, remove items, or say "checkout" when ready.`,
+  );
+}
+
+/** Advances the wizard by one step given the student's reply; always sends directly (never returns text). */
+async function handleSmartFlowStep(whatsappNumber: string, text: string, session: SessionState): Promise<void> {
+  const flow = session.smartFlow!;
+  const trimmed = text.trim();
+  const lower = trimmed.toLowerCase();
+
+  if (flow.stage === "awaiting_usual_confirm") {
+    const declined = /\bno\b/.test(lower) || lower.includes("something else");
+    const accepted = !declined && /\b(yes|usual|same|sure|ok(ay)?|yeah|yep)\b/.test(lower);
+    if (!accepted) {
+      session.smartFlow = undefined;
+      await sendWhatsAppText(whatsappNumber, "No worries! What would you like today?");
+      return;
+    }
+    if (flow.preferredArea) {
+      await sendWhatsAppButtons(whatsappNumber, "Where would you like to pick up your order?", [
+        { id: "pickup_preferred", title: `Near ${flow.preferredArea}`.slice(0, 20) },
+        { id: "pickup_other", title: "Other Location" },
+      ]);
+      flow.stage = "awaiting_pickup_location";
+    } else {
+      await sendAreaList(whatsappNumber);
+      flow.stage = "awaiting_area_pick";
+    }
+    return;
+  }
+
+  if (flow.stage === "awaiting_pickup_location") {
+    if (/other/i.test(trimmed)) {
+      await sendAreaList(whatsappNumber);
+      flow.stage = "awaiting_area_pick";
+      return;
+    }
+    await resolveAreaAndShowStalls(whatsappNumber, session, flow, flow.preferredArea!);
+    return;
+  }
+
+  if (flow.stage === "awaiting_area_pick") {
+    await resolveAreaAndShowStalls(whatsappNumber, session, flow, trimmed);
+    return;
+  }
+
+  if (flow.stage === "awaiting_stall") {
+    const stall =
+      flow.matchedStalls?.find((s) => s.id === trimmed || s.name.toLowerCase() === lower) ?? null;
+    if (!stall) {
+      await sendWhatsAppText(whatsappNumber, "Sorry, please pick one of the stalls from the list above.");
+      return;
+    }
+    await buildCartFromUsualOrder(whatsappNumber, session, stall.id, flow.usualItems);
+    session.smartFlow = undefined;
+    return;
+  }
+
+  session.smartFlow = undefined;
 }
 
 async function executeTool(
@@ -379,19 +574,37 @@ export async function handleIncomingMessage(whatsappNumber: string, text: string
 
   const session = getSessionState(student.sessionState);
 
+  // A smart-suggestion wizard step in progress takes priority over
+  // everything else — "yes"/an area name/a stall name only make sense in
+  // that context and would otherwise confuse the greeting check or the AI.
+  if (session.smartFlow) {
+    await handleSmartFlowStep(whatsappNumber, text, session);
+    await prisma.student.update({ where: { id: student.id }, data: { sessionState: session as unknown as object } });
+    return null;
+  }
+
   // Trigger on any bare greeting, not just the very first message ever —
   // otherwise "hi" sent mid-conversation just continues whatever topic was
   // last discussed instead of giving a fresh start, which reads as broken.
   if (GREETING_PATTERN.test(text.trim())) {
-    await sendWhatsAppButtons(whatsappNumber, GREETING_TEXT, [
-      { id: "browse_stalls", title: "Browse stalls" },
-      { id: "track_order", title: "Track my order" },
-      { id: "help", title: "Help" },
-    ]);
-    session.recentMessages = [
-      { role: "user" as const, content: truncateForHistory(text) },
-      { role: "assistant" as const, content: GREETING_TEXT },
-    ];
+    const suggestion = await eligibleForSmartSuggestion(student.id);
+    if (suggestion) {
+      await startSmartSuggestion(whatsappNumber, session, suggestion);
+      session.recentMessages = [
+        { role: "user" as const, content: truncateForHistory(text) },
+        { role: "assistant" as const, content: `Suggested usual order: ${formatUsualOrder(suggestion.items)}` },
+      ];
+    } else {
+      await sendWhatsAppButtons(whatsappNumber, GREETING_TEXT, [
+        { id: "browse_stalls", title: "Browse stalls" },
+        { id: "track_order", title: "Track my order" },
+        { id: "help", title: "Help" },
+      ]);
+      session.recentMessages = [
+        { role: "user" as const, content: truncateForHistory(text) },
+        { role: "assistant" as const, content: GREETING_TEXT },
+      ];
+    }
     await prisma.student.update({
       where: { id: student.id },
       data: { sessionState: session as unknown as object },

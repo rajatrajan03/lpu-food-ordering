@@ -22,6 +22,13 @@ enum StallStatus {
   paused
 }
 
+enum MealPeriod {
+  breakfast
+  lunch
+  snacks
+  dinner
+}
+
 model Student {
   id                 String   @id @default(uuid())
   whatsappNumber     String   @unique @map("whatsapp_number")
@@ -38,9 +45,40 @@ model Student {
   updatedAt          DateTime @updatedAt @map("updated_at")
   lastSeen           DateTime @default(now()) @map("last_seen")
 
-  orders Order[]
+  orders     Order[]
+  preference StudentPreference?
 
   @@map("students")
+}
+
+// Learned ordering habits, recomputed from a student's completed orders
+// after every completion (see orderService.transitionOrderStatus). Never
+// hand-edited — purely derived data, safe to recompute from scratch anytime.
+model StudentPreference {
+  id                 String      @id @default(uuid())
+  studentId          String      @unique @map("student_id")
+  favoriteStallId    String?     @map("favorite_stall_id")
+  favoriteMealPeriod MealPeriod? @map("favorite_meal_period")
+  // Derived from the favorite stall's own area/block — "pickup location" in
+  // this system is inherently a stall's location, there's no separate
+  // campus-location entity independent of stalls.
+  preferredArea      String?     @map("preferred_area")
+  preferredBlock     String?     @map("preferred_block")
+  // The most frequently repeated exact combination of items across completed
+  // orders (falls back to the most recent order if nothing repeats yet).
+  // Shape: [{ itemName, quantity }] — matched to a chosen stall's current
+  // menu by name at suggestion time, since ids are stall-specific.
+  usualOrderItems    Json?       @map("usual_order_items")
+  // Top items by total quantity across all completed orders, independent of
+  // which combination they appeared in. Shape: [{ itemName, count }].
+  favoriteItems      Json?       @map("favorite_items")
+  ordersAnalyzed     Int         @default(0) @map("orders_analyzed")
+  updatedAt          DateTime    @updatedAt @map("updated_at")
+
+  student       Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  favoriteStall Stall?  @relation(fields: [favoriteStallId], references: [id])
+
+  @@map("student_preferences")
 }
 
 model Stall {
@@ -59,6 +97,7 @@ model Stall {
   items        MenuItem[]
   pickupSlots  PickupSlot[]
   orders       Order[]
+  favoritedBy  StudentPreference[]
 
   // A brand can have multiple physical outlets — (block, name) is the real identity.
   @@unique([block, name])
