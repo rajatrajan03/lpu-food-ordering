@@ -63,6 +63,35 @@ export async function searchMenu(params: {
   });
 }
 
+/** Category buttons/list for a stall — grouped by canonical name (raw import label when unmapped). */
+export async function listStallCategories(stallId: string) {
+  const categories = await prisma.menuCategory.findMany({
+    where: { stallId, items: { some: { available: true } } },
+    include: { canonicalCategory: true },
+  });
+  const names = new Set<string>();
+  for (const c of categories) names.add(c.canonicalCategory?.name ?? c.rawLabel);
+  return [...names].sort((a, b) => a.localeCompare(b));
+}
+
+/** Available items in a stall's category, matched by the same display-name grouping as listStallCategories. */
+export async function listItemsInCategoryName(stallId: string, categoryName: string) {
+  return prisma.menuItem.findMany({
+    where: {
+      stallId,
+      available: true,
+      category: {
+        OR: [
+          { canonicalCategory: { name: categoryName } },
+          { canonicalCategoryId: null, rawLabel: categoryName },
+        ],
+      },
+    },
+    include: { variants: { where: { available: true } } },
+    orderBy: { name: "asc" },
+  });
+}
+
 /** Distinct campus areas with at least one active, currently-eligible stall — powers the "Other Location" list. */
 export async function listDistinctAreas(): Promise<string[]> {
   const stalls = await prisma.stall.findMany({

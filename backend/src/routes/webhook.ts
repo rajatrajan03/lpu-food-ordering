@@ -33,20 +33,23 @@ webhookRouter.post("/", (req, res) => {
   // A tapped quick-reply button arrives as its own message type, not "text" —
   // feed the button's label through as if the student had typed it, so the
   // existing natural-language tool loop handles it the same way either path.
+  // The button/row id is also forwarded (when present) so the deterministic
+  // menu-navigation flow can match on a stable id instead of parsing text.
   let text: string | undefined;
+  let interactiveId: string | undefined;
   if (message.type === "text") {
     text = message.text?.body as string;
   } else if (message.type === "interactive" && message.interactive?.button_reply) {
     text = message.interactive.button_reply.title as string;
+    interactiveId = message.interactive.button_reply.id as string;
   } else if (message.type === "interactive" && message.interactive?.list_reply) {
-    // Same idea for a tapped list row (e.g. a pickup slot) — its id and title
-    // aren't in "text" fields, so route it through the tool loop the same way.
     text = message.interactive.list_reply.title as string;
+    interactiveId = message.interactive.list_reply.id as string;
   }
   if (!text) return;
 
   console.log("Processing message from", from, ":", text);
-  handleIncomingMessage(from, text)
+  handleIncomingMessage(from, text, interactiveId)
     .then((reply) => {
       if (reply === null) return; // engine already sent a reply directly (e.g. greeting buttons)
       console.log("Got reply from conversation engine, length:", reply?.length);

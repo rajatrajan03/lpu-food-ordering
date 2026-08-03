@@ -194,6 +194,38 @@ export interface SessionState {
   // that intentionally bypasses the AI loop, the same way onboarding does,
   // since the buttons/lists at each step must reflect exact DB state.
   smartFlow?: SmartFlowState;
+  // Present while the button-first Browse Stalls menu (Home -> location ->
+  // stall -> category -> items -> item detail) is active. Same rationale as
+  // smartFlow: exact buttons/lists per step, not something to leave to the
+  // model. Cleared the moment the student types something that doesn't match
+  // an expected option, so free-text search always still works.
+  browseFlow?: BrowseFlowState;
+}
+
+export type BrowseScreen =
+  | { screen: "location_list" }
+  | { screen: "stall_list"; area: string }
+  | { screen: "category_menu"; stallId: string; stallName: string }
+  // categoryName doubles as the lookup key — a stall's categories are
+  // grouped for display by canonical-category name (falling back to the raw
+  // import label when unmapped), so re-querying by that name at handling
+  // time is simpler than threading a set of underlying MenuCategory ids
+  // through session state.
+  | { screen: "item_list"; stallId: string; stallName: string; categoryName: string }
+  | {
+      screen: "item_detail";
+      stallId: string;
+      stallName: string;
+      itemId: string;
+      itemName: string;
+      unitPrice: number;
+      quantity: number;
+    };
+
+export interface BrowseFlowState {
+  current: BrowseScreen;
+  // Ancestor screens, most recent last — Back pops and re-renders the top.
+  stack: BrowseScreen[];
 }
 
 export interface UsualItemRef {

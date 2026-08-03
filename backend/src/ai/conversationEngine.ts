@@ -15,6 +15,14 @@ import * as orderService from "../services/orderService";
 import * as studentService from "../services/studentService";
 import * as preferenceService from "../services/preferenceService";
 import { sendWhatsAppText, sendWhatsAppButtons, sendWhatsAppList, type ListRow } from "../whatsapp/client";
+import {
+  HOME_BUTTON_IDS,
+  sendHomeScreen,
+  sendMoreMenu,
+  handleMoreSelection,
+  startBrowseStalls,
+  handleBrowseFlowStep,
+} from "./browseFlow";
 
 // Gemini's function-calling format wants {name, description, parametersJsonSchema}
 // rather than the OpenAI-style {type:"function", function:{...}} shape the tool
@@ -31,8 +39,6 @@ const GEMINI_TOOLS = [
 ];
 
 const GREETING_PATTERN = /^(hi+|hello+|hey+|hlo|yo|start|menu)\b/i;
-const GREETING_TEXT =
-  "Hi! 👋 I'm the LPU Food ordering assistant. Just tell me what you're craving, or tap an option below.";
 
 const SYSTEM_PROMPT = `You are the ordering assistant for LPU campus food stalls, talking to a student over WhatsApp.
 Rules:
@@ -99,6 +105,7 @@ function getSessionState(raw: unknown): SessionState {
     knownItems: s.knownItems ?? {},
     knownSlots: s.knownSlots ?? {},
     smartFlow: s.smartFlow,
+    browseFlow: s.browseFlow,
   };
 }
 
@@ -539,10 +546,14 @@ async function executeTool(
 
 /**
  * Runs one WhatsApp message through the model + tool loop and returns the reply text.
- * Returns null when the reply was already sent directly (e.g. the greeting's quick-reply
- * buttons) — the caller should not send anything further for that turn.
+ * Returns null when the reply was already sent directly (e.g. an interactive menu screen)
+ * — the caller should not send anything further for that turn.
  */
-export async function handleIncomingMessage(whatsappNumber: string, text: string): Promise<string | null> {
+export async function handleIncomingMessage(
+  whatsappNumber: string,
+  text: string,
+  interactiveId?: string,
+): Promise<string | null> {
   const { student: found, isNewStudent } = await studentService.findOrCreateStudent(whatsappNumber);
   let student = found;
 
@@ -574,42 +585,67 @@ export async function handleIncomingMessage(whatsappNumber: string, text: string
 
   const session = getSessionState(student.sessionState);
 
-  // A smart-suggestion wizard step in progress takes priority over
-  // everything else — "yes"/an area name/a stall name only make sense in
-  // that context and would otherwise confuse the greeting check or the AI.
-  if (session.smartFlow) {
-    await handleSmartFlowStep(whatsappNumber, text, session);
+  const persistAndReturn = async (): Promise<null> => {
     await prisma.student.update({ where: { id: student.id }, data: { sessionState: session as unknown as object } });
     return null;
+  };
+
+  // A smart-suggestion wizard step in progress takes priority over
+  // everything else — "yes"/an area name/a stall name only make sense in
+  // that context and would otherwise confuse the menu checks or the AI.
+  if (session.smartFlow) {
+    await handleSmartFlowStep(whatsappNumber, text, session);
+    return persistAndReturn();
+  }
+
+  // Same priority rationale for the Browse Stalls wizard — a tapped list row
+  // or typed location/stall name only makes sense mid-flow. "fallthrough"
+  // means the reply didn't match anything here (browseFlow is already
+  // cleared by the handler) — keep going so free-text search still works.
+  if (session.browseFlow) {
+    const result = await handleBrowseFlowStep(whatsappNumber, text, interactiveId, session);
+    if (result === "home") {
+      await sendHomeScreen(whatsappNumber, student.name, session);
+      return persistAndReturn();
+    }
+    if (result === "handled") return persistAndReturn();
+  }
+
+  if (interactiveId === HOME_BUTTON_IDS.browse) {
+    await startBrowseStalls(whatsappNumber, session);
+    return persistAndReturn();
+  }
+  if (interactiveId === HOME_BUTTON_IDS.forYou) {
+    const suggestion = await eligibleForSmartSuggestion(student.id);
+    if (suggestion) {
+      await startSmartSuggestion(whatsappNumber, session, suggestion);
+    } else {
+      await sendWhatsAppText(
+        whatsappNumber,
+        "I don't have a usual order learned for you yet — order a couple of times and I'll pick up on it! What would you like today?",
+      );
+    }
+    return persistAndReturn();
+  }
+  if (interactiveId === HOME_BUTTON_IDS.more) {
+    await sendMoreMenu(whatsappNumber);
+    return persistAndReturn();
+  }
+  if (interactiveId) {
+    const handledMore = await handleMoreSelection(whatsappNumber, interactiveId, student.id, session);
+    if (handledMore) return persistAndReturn();
   }
 
   // Trigger on any bare greeting, not just the very first message ever —
   // otherwise "hi" sent mid-conversation just continues whatever topic was
   // last discussed instead of giving a fresh start, which reads as broken.
   if (GREETING_PATTERN.test(text.trim())) {
-    const suggestion = await eligibleForSmartSuggestion(student.id);
-    if (suggestion) {
-      await startSmartSuggestion(whatsappNumber, session, suggestion);
-      session.recentMessages = [
-        { role: "user" as const, content: truncateForHistory(text) },
-        { role: "assistant" as const, content: `Suggested usual order: ${formatUsualOrder(suggestion.items)}` },
-      ];
-    } else {
-      await sendWhatsAppButtons(whatsappNumber, GREETING_TEXT, [
-        { id: "browse_stalls", title: "Browse stalls" },
-        { id: "track_order", title: "Track my order" },
-        { id: "help", title: "Help" },
-      ]);
-      session.recentMessages = [
-        { role: "user" as const, content: truncateForHistory(text) },
-        { role: "assistant" as const, content: GREETING_TEXT },
-      ];
-    }
-    await prisma.student.update({
-      where: { id: student.id },
-      data: { sessionState: session as unknown as object },
-    });
-    return null;
+    await sendHomeScreen(whatsappNumber, student.name, session);
+    session.recentMessages = [
+      { role: "user" as const, content: truncateForHistory(text) },
+      { role: "assistant" as const, content: "Sent Home menu" },
+    ];
+    return persistAndReturn();
   }
 
   const nameContext = student.name ? `\n\nThe student's name is ${student.name} — you may address them by name occasionally (e.g. in a greeting), but don't overuse it.` : "";

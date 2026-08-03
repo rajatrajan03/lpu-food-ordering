@@ -1,0 +1,387 @@
+import { prisma } from "../lib/prisma";
+import * as menuService from "../services/menuService";
+import * as orderService from "../services/orderService";
+import * as preferenceService from "../services/preferenceService";
+import { rememberNames, type SessionState, type CartLine, type BrowseScreen } from "./tools";
+import { sendWhatsAppText, sendWhatsAppButtons, sendWhatsAppList, type ListRow } from "../whatsapp/client";
+
+// ---------------------------------------------------------------------------
+// Button-first navigation: Home -> Browse Stalls -> location -> stall ->
+// category -> items -> item detail, plus a flat "More" menu. A deterministic
+// wizard for the same reason smartFlow/onboarding are: buttons/lists at every
+// step must reflect exact DB state, which free-text AI generation can't be
+// trusted to get exactly right. Falls through to the AI loop whenever the
+// student's reply doesn't match an expected option, so search/questions keep
+// working mid-browse.
+// ---------------------------------------------------------------------------
+
+export const HOME_BUTTON_IDS = { browse: "home_browse", forYou: "home_foryou", more: "home_more" };
+export const MORE_ROW_IDS = {
+  cart: "more_cart",
+  track: "more_track",
+  recent: "more_recent",
+  fav: "more_fav",
+  profile: "more_profile",
+  help: "more_help",
+};
+const NAV_BACK = "nav_back";
+const NAV_HOME = "nav_home";
+
+export async function sendHomeScreen(whatsappNumber: string, name: string | null, session: SessionState): Promise<void> {
+  session.browseFlow = undefined;
+  const greetName = name ? `, ${name}` : "";
+  await sendWhatsAppButtons(whatsappNumber, `👋 Welcome back${greetName}!`, [
+    { id: HOME_BUTTON_IDS.browse, title: "🍽 Browse Stalls" },
+    { id: HOME_BUTTON_IDS.forYou, title: "✨ For You" },
+    { id: HOME_BUTTON_IDS.more, title: "☰ More" },
+  ]);
+}
+
+export async function sendMoreMenu(whatsappNumber: string): Promise<void> {
+  const rows: ListRow[] = [
+    { id: MORE_ROW_IDS.cart, title: "🛒 View Cart" },
+    { id: MORE_ROW_IDS.track, title: "📦 Track Order" },
+    { id: MORE_ROW_IDS.recent, title: "🕒 Recent Orders" },
+    { id: MORE_ROW_IDS.fav, title: "⭐ Favorite Stalls" },
+    { id: MORE_ROW_IDS.profile, title: "👤 My Profile" },
+    { id: MORE_ROW_IDS.help, title: "❓ Help" },
+    { id: NAV_HOME, title: "🏠 Home" },
+  ];
+  await sendWhatsAppList(whatsappNumber, "More options:", "Choose", rows);
+}
+
+/** Handles a tap on a More-menu row. Returns false if `id` isn't one of them (e.g. Home, handled by the caller). */
+export async function handleMoreSelection(
+  whatsappNumber: string,
+  id: string,
+  studentId: string,
+  session: SessionState,
+): Promise<boolean> {
+  switch (id) {
+    case MORE_ROW_IDS.cart: {
+      if (session.cart.length === 0) {
+        await sendWhatsAppText(whatsappNumber, "Your cart is empty.");
+        return true;
+      }
+      const total = session.cart.reduce((s, l) => s + l.unitPrice * l.quantity, 0);
+      const lines = session.cart.map((l) => `${l.quantity}x ${l.itemName} — ₹${l.unitPrice * l.quantity}`).join("\n");
+      await sendWhatsAppText(whatsappNumber, `🛒 Your cart:\n${lines}\nTotal: ₹${total}\n\nSay "checkout" when ready.`);
+      return true;
+    }
+    case MORE_ROW_IDS.track: {
+      const orders = await orderService.getActiveOrdersForStudent(studentId);
+      if (orders.length === 0) {
+        await sendWhatsAppText(whatsappNumber, "You have no active orders.");
+        return true;
+      }
+      const lines = orders.map((o) => `#${o.id.slice(0, 6)} — ${o.stall.name} — ${o.status}`).join("\n");
+      await sendWhatsAppText(whatsappNumber, `📦 Active orders:\n${lines}`);
+      return true;
+    }
+    case MORE_ROW_IDS.recent: {
+      const orders = await orderService.getOrderHistoryForStudent(studentId, 5);
+      if (orders.length === 0) {
+        await sendWhatsAppText(whatsappNumber, "No past orders yet.");
+        return true;
+      }
+      const lines = orders.map((o) => `${o.stall.name} — ₹${Number(o.totalAmount)} — ${o.status}`).join("\n");
+      await sendWhatsAppText(whatsappNumber, `🕒 Recent orders:\n${lines}`);
+      return true;
+    }
+    case MORE_ROW_IDS.fav: {
+      const pref = await preferenceService.getPreferences(studentId);
+      if (!pref?.favoriteStall) {
+        await sendWhatsAppText(whatsappNumber, "No favorite stall yet — order a bit more and I'll learn it!");
+        return true;
+      }
+      await sendWhatsAppText(whatsappNumber, `⭐ Your favorite stall: ${pref.favoriteStall.name}`);
+      return true;
+    }
+    case MORE_ROW_IDS.profile: {
+      const student = await prisma.student.findUnique({ where: { id: studentId } });
+      await sendWhatsAppText(whatsappNumber, `👤 ${student?.name ?? "—"}\nReg No: ${student?.registrationNumber ?? "—"}`);
+      return true;
+    }
+    case MORE_ROW_IDS.help: {
+      await sendWhatsAppText(
+        whatsappNumber,
+        '❓ Tell me what you\'re craving, or use Browse Stalls / For You from the Home menu. You can always type "home" or "back".',
+      );
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+function enterScreen(session: SessionState, screen: BrowseScreen): void {
+  if (!session.browseFlow) {
+    session.browseFlow = { current: screen, stack: [] };
+    return;
+  }
+  session.browseFlow.stack.push(session.browseFlow.current);
+  session.browseFlow.current = screen;
+}
+
+function goBack(session: SessionState): BrowseScreen | null {
+  const flow = session.browseFlow;
+  if (!flow || flow.stack.length === 0) return null;
+  flow.current = flow.stack.pop()!;
+  return flow.current;
+}
+
+export async function startBrowseStalls(whatsappNumber: string, session: SessionState): Promise<void> {
+  session.browseFlow = { current: { screen: "location_list" }, stack: [] };
+  await renderLocationList(whatsappNumber);
+}
+
+async function renderLocationList(whatsappNumber: string): Promise<void> {
+  const areas = await menuService.listDistinctAreas();
+  if (areas.length === 0) {
+    await sendWhatsAppText(whatsappNumber, "No pickup locations are available right now.");
+    return;
+  }
+  const rows: ListRow[] = areas.slice(0, 9).map((a) => ({ id: `loc:${a}`, title: a.slice(0, 24) }));
+  rows.push({ id: NAV_HOME, title: "🏠 Home" });
+  await sendWhatsAppList(whatsappNumber, "Choose a pickup location:", "Choose location", rows);
+}
+
+async function renderStallList(whatsappNumber: string, session: SessionState, area: string): Promise<void> {
+  const stalls = await menuService.listStalls({ area, limit: 8 });
+  if (stalls.length === 0) {
+    await sendWhatsAppText(whatsappNumber, `No stalls available near ${area} right now.`);
+    goBack(session);
+    return;
+  }
+  session.knownStalls = rememberNames(session.knownStalls, stalls.map((s) => [s.name, s.id]));
+  const rows: ListRow[] = stalls.map((s) => ({ id: `stall:${s.id}`, title: s.name.slice(0, 24), description: s.block ?? undefined }));
+  rows.push({ id: NAV_BACK, title: "⬅️ Back" });
+  rows.push({ id: NAV_HOME, title: "🏠 Home" });
+  await sendWhatsAppList(whatsappNumber, `Stalls near ${area}:`, "Choose stall", rows);
+}
+
+async function renderCategoryMenu(whatsappNumber: string, stallId: string, stallName: string): Promise<void> {
+  const categories = await menuService.listStallCategories(stallId);
+  if (categories.length === 0) {
+    await sendWhatsAppText(whatsappNumber, `${stallName} has no items available right now.`);
+    return;
+  }
+  if (categories.length <= 3) {
+    await sendWhatsAppButtons(
+      whatsappNumber,
+      `${stallName} — choose a category:`,
+      categories.map((c) => ({ id: `cat:${c}`, title: c.slice(0, 20) })),
+    );
+    return;
+  }
+  const rows: ListRow[] = categories.slice(0, 8).map((c) => ({ id: `cat:${c}`, title: c.slice(0, 24) }));
+  rows.push({ id: NAV_BACK, title: "⬅️ Back" });
+  rows.push({ id: NAV_HOME, title: "🏠 Home" });
+  await sendWhatsAppList(whatsappNumber, `${stallName} — choose a category:`, "Choose category", rows);
+}
+
+async function renderItemList(
+  whatsappNumber: string,
+  session: SessionState,
+  stallId: string,
+  stallName: string,
+  categoryName: string,
+): Promise<void> {
+  const items = await menuService.listItemsInCategoryName(stallId, categoryName);
+  if (items.length === 0) {
+    await sendWhatsAppText(whatsappNumber, `No items available in ${categoryName} right now.`);
+    goBack(session);
+    return;
+  }
+  session.knownItems = rememberNames(session.knownItems, items.map((i) => [i.name, i.id]));
+  const rows: ListRow[] = items.slice(0, 8).map((i) => ({
+    id: `item:${i.id}`,
+    title: i.name.slice(0, 24),
+    description: `₹${Number(i.basePrice)}`.slice(0, 72),
+  }));
+  rows.push({ id: NAV_BACK, title: "⬅️ Back" });
+  rows.push({ id: NAV_HOME, title: "🏠 Home" });
+  await sendWhatsAppList(whatsappNumber, `${stallName} — ${categoryName}:`, "Choose item", rows);
+}
+
+async function renderItemDetail(whatsappNumber: string, screen: Extract<BrowseScreen, { screen: "item_detail" }>): Promise<void> {
+  const subtotal = screen.unitPrice * screen.quantity;
+  const rows: ListRow[] = [
+    { id: "qty_inc", title: "➕ Increase Quantity" },
+    { id: "qty_dec", title: "➖ Decrease Quantity" },
+    { id: "add_cart", title: "🛒 Add To Cart" },
+    { id: "continue_shop", title: "➡️ Continue Shopping" },
+    { id: NAV_BACK, title: "⬅️ Back" },
+    { id: NAV_HOME, title: "🏠 Home" },
+  ];
+  await sendWhatsAppList(
+    whatsappNumber,
+    `${screen.itemName} — ₹${screen.unitPrice} x ${screen.quantity} = ₹${subtotal}`,
+    "Choose action",
+    rows,
+  );
+}
+
+async function renderScreen(whatsappNumber: string, session: SessionState, screen: BrowseScreen): Promise<void> {
+  switch (screen.screen) {
+    case "location_list":
+      return renderLocationList(whatsappNumber);
+    case "stall_list":
+      return renderStallList(whatsappNumber, session, screen.area);
+    case "category_menu":
+      return renderCategoryMenu(whatsappNumber, screen.stallId, screen.stallName);
+    case "item_list":
+      return renderItemList(whatsappNumber, session, screen.stallId, screen.stallName, screen.categoryName);
+    case "item_detail":
+      return renderItemDetail(whatsappNumber, screen);
+  }
+}
+
+export type BrowseFlowResult = "handled" | "home" | "fallthrough";
+
+/**
+ * Advances the Browse Stalls wizard by one step.
+ * - "handled": already sent a reply, stay put.
+ * - "home": browseFlow cleared, caller should send the Home screen.
+ * - "fallthrough": browseFlow cleared, reply didn't match anything here —
+ *   caller should run the normal AI loop so search/questions keep working.
+ */
+export async function handleBrowseFlowStep(
+  whatsappNumber: string,
+  text: string,
+  interactiveId: string | undefined,
+  session: SessionState,
+): Promise<BrowseFlowResult> {
+  const flow = session.browseFlow!;
+  const id = interactiveId ?? "";
+  const lower = text.trim().toLowerCase();
+
+  if (id === NAV_HOME || lower === "home") {
+    session.browseFlow = undefined;
+    return "home";
+  }
+  if (id === NAV_BACK || lower === "back") {
+    const prev = goBack(session);
+    if (!prev) {
+      session.browseFlow = undefined;
+      return "home";
+    }
+    await renderScreen(whatsappNumber, session, prev);
+    return "handled";
+  }
+
+  switch (flow.current.screen) {
+    case "location_list": {
+      const area = id.startsWith("loc:") ? id.slice(4) : text.trim();
+      enterScreen(session, { screen: "stall_list", area });
+      await renderStallList(whatsappNumber, session, area);
+      return "handled";
+    }
+
+    case "stall_list": {
+      let stallId: string | undefined;
+      let stallName: string | undefined;
+      if (id.startsWith("stall:")) {
+        stallId = id.slice(6);
+        stallName = Object.entries(session.knownStalls).find(([, v]) => v === stallId)?.[0];
+      } else {
+        stallId = session.knownStalls[text.trim()];
+        stallName = text.trim();
+      }
+      if (!stallId) {
+        await sendWhatsAppText(whatsappNumber, "Please pick a stall from the list above.");
+        return "handled";
+      }
+      enterScreen(session, { screen: "category_menu", stallId, stallName: stallName ?? "Stall" });
+      await renderCategoryMenu(whatsappNumber, stallId, stallName ?? "Stall");
+      return "handled";
+    }
+
+    case "category_menu": {
+      const cm = flow.current;
+      const categoryName = id.startsWith("cat:") ? id.slice(4) : text.trim();
+      enterScreen(session, { screen: "item_list", stallId: cm.stallId, stallName: cm.stallName, categoryName });
+      await renderItemList(whatsappNumber, session, cm.stallId, cm.stallName, categoryName);
+      return "handled";
+    }
+
+    case "item_list": {
+      const il = flow.current;
+      const itemId = id.startsWith("item:") ? id.slice(5) : session.knownItems[text.trim()];
+      if (!itemId) {
+        await sendWhatsAppText(whatsappNumber, "Please pick an item from the list above.");
+        return "handled";
+      }
+      const item = await prisma.menuItem.findUnique({ where: { id: itemId } });
+      if (!item || !item.available) {
+        await sendWhatsAppText(whatsappNumber, "That item just went unavailable — pick another.");
+        return "handled";
+      }
+      const detail: BrowseScreen = {
+        screen: "item_detail",
+        stallId: il.stallId,
+        stallName: il.stallName,
+        itemId: item.id,
+        itemName: item.name,
+        unitPrice: Number(item.basePrice),
+        quantity: 1,
+      };
+      enterScreen(session, detail);
+      await renderItemDetail(whatsappNumber, detail);
+      return "handled";
+    }
+
+    case "item_detail": {
+      const detail = flow.current;
+      if (id === "qty_inc") {
+        detail.quantity += 1;
+        await renderItemDetail(whatsappNumber, detail);
+        return "handled";
+      }
+      if (id === "qty_dec") {
+        detail.quantity = Math.max(1, detail.quantity - 1);
+        await renderItemDetail(whatsappNumber, detail);
+        return "handled";
+      }
+      if (id === "add_cart") {
+        if (session.cart.length > 0 && session.activeStallId && session.activeStallId !== detail.stallId) {
+          await sendWhatsAppText(
+            whatsappNumber,
+            "Your cart has items from a different stall — checkout or clear it first before adding from here.",
+          );
+          return "handled";
+        }
+        const existing = session.cart.find((l) => l.itemId === detail.itemId && !l.variantId);
+        if (existing) existing.quantity += detail.quantity;
+        else {
+          const line: CartLine = {
+            itemId: detail.itemId,
+            itemName: detail.itemName,
+            unitPrice: detail.unitPrice,
+            quantity: detail.quantity,
+          };
+          session.cart.push(line);
+        }
+        session.activeStallId = detail.stallId;
+        session.knownItems = rememberNames(session.knownItems, [[detail.itemName, detail.itemId]]);
+        await sendWhatsAppText(whatsappNumber, `Added ${detail.quantity}x ${detail.itemName} to your cart. 🛒`);
+        // Never jump straight to checkout after one add — return to the item list.
+        const prev = goBack(session);
+        if (prev) await renderScreen(whatsappNumber, session, prev);
+        return "handled";
+      }
+      if (id === "continue_shop") {
+        const prev = goBack(session);
+        if (prev) await renderScreen(whatsappNumber, session, prev);
+        else session.browseFlow = undefined;
+        return "handled";
+      }
+      await sendWhatsAppText(whatsappNumber, "Please choose one of the options above.");
+      return "handled";
+    }
+
+    default:
+      session.browseFlow = undefined;
+      return "fallthrough";
+  }
+}
