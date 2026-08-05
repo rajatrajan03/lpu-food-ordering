@@ -5,8 +5,24 @@ import { emptySessionState } from "../ai/tools";
 export const WELCOME_TEXT =
   "Welcome to LPU Food Ordering! 👋 Before we start, what's your University Registration Number?";
 export const ASK_NAME_TEXT = "Got it! And what would you like me to call you?";
+export const NAME_RETRY_TEXT = "That doesn't look like a name — what would you like me to call you?";
 export function onboardedConfirmationText(name: string): string {
   return `Nice to meet you, ${name}! You're all set — tell me what you're craving, or say "hi" to see your options.`;
+}
+
+// Matches GREETING_PATTERN in conversationEngine.ts plus a few more common
+// one-word replies — a student answering "what should I call you?" with one
+// of these almost certainly isn't giving their actual name (they're either
+// re-greeting, confused, or just acknowledging), so it shouldn't get saved
+// as one.
+const NOT_A_NAME = /^(hi+|hello+|hey+|hlo|yo|ok(ay)?|k|thanks?|thank you|start|menu|yes|no|sure)$/i;
+
+/** Rejects obvious non-name input so onboarding never silently stores a greeting/filler word as the student's name. */
+export function isPlausibleName(raw: string): boolean {
+  const trimmed = raw.trim();
+  if (trimmed.length < 2) return false;
+  if (NOT_A_NAME.test(trimmed)) return false;
+  return true;
 }
 
 /** Below this gap since lastSeen, treat it as the same ongoing conversation — no return greeting. */

@@ -643,6 +643,10 @@ export async function handleIncomingMessage(
     return null;
   }
   if (!student.name) {
+    if (!studentService.isPlausibleName(text)) {
+      await sendWhatsAppText(whatsappNumber, studentService.NAME_RETRY_TEXT);
+      return null;
+    }
     student = await studentService.saveName(student.id, text);
     await studentService.touchLastSeen(student.id);
     await sendWhatsAppText(whatsappNumber, studentService.onboardedConfirmationText(student.name!));
