@@ -17,11 +17,15 @@ import * as preferenceService from "../services/preferenceService";
 import { sendWhatsAppText, sendWhatsAppButtons, sendWhatsAppList, type ListRow } from "../whatsapp/client";
 import {
   HOME_BUTTON_IDS,
+  MORE_ROW_IDS,
   sendHomeScreen,
   sendMoreMenu,
   handleMoreSelection,
   startBrowseStalls,
   handleBrowseFlowStep,
+  sendPostOrderActions,
+  POST_ORDER_TRACK_ID,
+  POST_ORDER_CANCEL_PREFIX,
 } from "./browseFlow";
 
 // Gemini's function-calling format wants {name, description, parametersJsonSchema}
@@ -54,6 +58,7 @@ Rules:
 - If the student sends something unrelated to picking a slot while one is pending (e.g. "remove it", changing an item), handle that request directly — removing/changing a cart item never requires re-fetching pickup slots.
 - Before calling place_order, show a one-line order summary (items, total, slot time) and wait for an explicit yes. Never call place_order on the same turn you first show the summary.
 - After place_order succeeds, reply with EXACTLY the tool result's \`summary\` field, unchanged — it's already correctly formatted with the order id, items, total, and pickup time in the right timezone. Do not reformat it, recompute the pickup time yourself, or add anything else.
+- For "track my order" / "status" / "where's my order", call get_order_status and reply with EXACTLY its \`summary\` field, unchanged — same reasoning, it's already formatted correctly per order.
 - If a search returns nothing, or an item/variant/slot turns out unavailable, don't just say "not available" — make ONE more tool call to find a close alternative (broader query, different stall, next open slot) before replying.
 - When the student names a specific pickup time, pass it as get_pickup_slots' preferred_time (24-hour HH:MM). If the nearest available slot is still far from what they asked (e.g. they said 6pm and the closest is 1pm), say plainly that nothing's available near that time and show what's closest instead — don't just dump the full day's slots as if that's what they asked for.
 - "My order history" / "my past orders" -> call get_order_history. "Repeat my last order" / "same as last time" -> call repeat_last_order directly (don't manually look up and re-add items one by one) — it fills the cart from their most recent order and tells you if anything from it is no longer available, which you should mention.
@@ -162,9 +167,21 @@ function formatSlotTime(t: Date): string {
   });
 }
 
+const ORDER_STATUS_EMOJI: Partial<Record<string, string>> = {
+  placed: "🕐",
+  accepted: "✅",
+  preparing: "👨‍🍳",
+  ready: "🎉",
+  completed: "✔️",
+  cancelled: "❌",
+  rejected: "🚫",
+};
+
 /** Populated by the get_pickup_slots case so the caller can follow up with a tappable list. */
 interface ToolSideEffects {
   pickupSlotRows?: ListRow[];
+  /** Set by place_order so the caller can follow up with Track/Cancel buttons for the new order. */
+  placedOrderId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -479,6 +496,7 @@ async function executeTool(
         const itemLines = order.items.map((i) => `${i.quantity}x ${i.itemNameSnapshot}`).join(", ");
         const pickupTime = `${formatSlotTime(order.pickupSlot.startTime)} – ${formatSlotTime(order.pickupSlot.endTime)}`;
         const summary = `✅ Order placed! #${order.id.slice(0, 6)} — ${stall?.name ?? "your stall"}\n${itemLines}\nTotal: ₹${Number(order.totalAmount)}\nPickup: ${pickupTime}`;
+        sideEffects.placedOrderId = order.id;
         return { order, summary };
       } catch (err) {
         return { error: err instanceof orderService.OrderError ? err.message : "Could not place the order." };
@@ -487,17 +505,21 @@ async function executeTool(
 
     case "get_order_status": {
       const orders = await orderService.getActiveOrdersForStudent(studentId);
-      // Same reasoning as place_order — pre-format the pickup time here so
-      // the model never has to interpret a raw UTC timestamp itself.
+      if (orders.length === 0) {
+        return { orders: [], summary: "You have no active orders right now." };
+      }
+      // Same reasoning as place_order — build the full display text here
+      // (times, layout) so the model never has to interpret a raw UTC
+      // timestamp or reinvent formatting for something already correct.
+      const blocks = orders.map((o) => {
+        const items = o.items.map((i) => `${i.quantity}x ${i.itemNameSnapshot}`).join(", ");
+        const pickupTime = `${formatSlotTime(o.pickupSlot.startTime)} – ${formatSlotTime(o.pickupSlot.endTime)}`;
+        const emoji = ORDER_STATUS_EMOJI[o.status] ?? "📦";
+        return `${emoji} #${o.id.slice(0, 6)} — ${o.stall.name}\n${items}\nTotal: ₹${Number(o.totalAmount)}\nPickup: ${pickupTime}\nStatus: ${o.status}`;
+      });
       return {
-        orders: orders.map((o) => ({
-          id: o.id,
-          status: o.status,
-          stall: o.stall.name,
-          items: o.items.map((i) => `${i.quantity}x ${i.itemNameSnapshot}`),
-          total: Number(o.totalAmount),
-          pickupTime: `${formatSlotTime(o.pickupSlot.startTime)} – ${formatSlotTime(o.pickupSlot.endTime)}`,
-        })),
+        orders: orders.map((o) => ({ id: o.id, status: o.status, stall: o.stall.name })),
+        summary: blocks.join("\n\n"),
       };
     }
 
@@ -662,6 +684,23 @@ export async function handleIncomingMessage(
     await sendMoreMenu(whatsappNumber);
     return persistAndReturn();
   }
+  if (interactiveId === POST_ORDER_TRACK_ID) {
+    await handleMoreSelection(whatsappNumber, MORE_ROW_IDS.track, student.id, session);
+    return persistAndReturn();
+  }
+  if (interactiveId?.startsWith(POST_ORDER_CANCEL_PREFIX)) {
+    const orderId = interactiveId.slice(POST_ORDER_CANCEL_PREFIX.length);
+    try {
+      await orderService.cancelOrder(orderId, student.id);
+      await sendWhatsAppText(whatsappNumber, "Your order has been cancelled.");
+    } catch (err) {
+      await sendWhatsAppText(
+        whatsappNumber,
+        err instanceof orderService.OrderError ? err.message : "Could not cancel the order.",
+      );
+    }
+    return persistAndReturn();
+  }
   if (interactiveId) {
     const handledMore = await handleMoreSelection(whatsappNumber, interactiveId, student.id, session);
     if (handledMore) return persistAndReturn();
@@ -750,6 +789,9 @@ export async function handleIncomingMessage(
   // student type back a number/time by hand.
   if (sideEffects.pickupSlotRows?.length) {
     await sendWhatsAppList(whatsappNumber, "Pick a pickup time:", "Choose a slot", sideEffects.pickupSlotRows);
+  }
+  if (sideEffects.placedOrderId) {
+    await sendPostOrderActions(whatsappNumber, sideEffects.placedOrderId);
   }
 
   return finalReply;

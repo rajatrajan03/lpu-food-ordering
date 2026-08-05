@@ -27,6 +27,26 @@ export const MORE_ROW_IDS = {
 const NAV_BACK = "nav_back";
 const NAV_HOME = "nav_home";
 
+/** Formats a Prisma @db.Time value as "9:00 AM" in IST — the production server runs in UTC. */
+function formatSlotTime(t: Date): string {
+  return new Date(t).toLocaleTimeString("en-IN", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: "Asia/Kolkata",
+  });
+}
+
+const ORDER_STATUS_EMOJI: Partial<Record<string, string>> = {
+  placed: "🕐",
+  accepted: "✅",
+  preparing: "👨‍🍳",
+  ready: "🎉",
+  completed: "✔️",
+  cancelled: "❌",
+  rejected: "🚫",
+};
+
 export async function sendHomeScreen(whatsappNumber: string, name: string | null, session: SessionState): Promise<void> {
   session.browseFlow = undefined;
   const greetName = name ? `, ${name}` : "";
@@ -34,6 +54,17 @@ export async function sendHomeScreen(whatsappNumber: string, name: string | null
     { id: HOME_BUTTON_IDS.browse, title: "🍽 Browse Stalls" },
     { id: HOME_BUTTON_IDS.forYou, title: "✨ For You" },
     { id: HOME_BUTTON_IDS.more, title: "☰ More" },
+  ]);
+}
+
+export const POST_ORDER_TRACK_ID = "post_track";
+export const POST_ORDER_CANCEL_PREFIX = "post_cancel:";
+
+/** Sent right after a successful place_order confirmation — gives an immediate next step instead of leaving the student to type. */
+export async function sendPostOrderActions(whatsappNumber: string, orderId: string): Promise<void> {
+  await sendWhatsAppButtons(whatsappNumber, "What would you like to do next?", [
+    { id: POST_ORDER_TRACK_ID, title: "📦 Track Order" },
+    { id: `${POST_ORDER_CANCEL_PREFIX}${orderId}`, title: "❌ Cancel Order" },
   ]);
 }
 
@@ -74,8 +105,13 @@ export async function handleMoreSelection(
         await sendWhatsAppText(whatsappNumber, "You have no active orders.");
         return true;
       }
-      const lines = orders.map((o) => `#${o.id.slice(0, 6)} — ${o.stall.name} — ${o.status}`).join("\n");
-      await sendWhatsAppText(whatsappNumber, `📦 Active orders:\n${lines}`);
+      const blocks = orders.map((o) => {
+        const items = o.items.map((i) => `${i.quantity}x ${i.itemNameSnapshot}`).join(", ");
+        const pickupTime = `${formatSlotTime(o.pickupSlot.startTime)} – ${formatSlotTime(o.pickupSlot.endTime)}`;
+        const emoji = ORDER_STATUS_EMOJI[o.status] ?? "📦";
+        return `${emoji} #${o.id.slice(0, 6)} — ${o.stall.name}\n${items}\nTotal: ₹${Number(o.totalAmount)}\nPickup: ${pickupTime}\nStatus: ${o.status}`;
+      });
+      await sendWhatsAppText(whatsappNumber, blocks.join("\n\n"));
       return true;
     }
     case MORE_ROW_IDS.recent: {
