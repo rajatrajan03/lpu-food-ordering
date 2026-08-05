@@ -123,6 +123,22 @@ function enterScreen(session: SessionState, screen: BrowseScreen): void {
   session.browseFlow.current = screen;
 }
 
+function addDetailToCart(session: SessionState, detail: Extract<BrowseScreen, { screen: "item_detail" }>): void {
+  const existing = session.cart.find((l) => l.itemId === detail.itemId && !l.variantId);
+  if (existing) existing.quantity += detail.quantity;
+  else {
+    const line: CartLine = {
+      itemId: detail.itemId,
+      itemName: detail.itemName,
+      unitPrice: detail.unitPrice,
+      quantity: detail.quantity,
+    };
+    session.cart.push(line);
+  }
+  session.activeStallId = detail.stallId;
+  session.knownItems = rememberNames(session.knownItems, [[detail.itemName, detail.itemId]]);
+}
+
 function goBack(session: SessionState): BrowseScreen | null {
   const flow = session.browseFlow;
   if (!flow || flow.stack.length === 0) return null;
@@ -289,8 +305,11 @@ export async function handleBrowseFlowStep(
         stallName = text.trim();
       }
       if (!stallId) {
-        await sendWhatsAppText(whatsappNumber, "Please pick a stall from the list above.");
-        return "handled";
+        // Doesn't match a stall from the list — let the AI loop handle it
+        // (e.g. a craving, "checkout", "clear cart") rather than repeating
+        // "pick from the list" forever for input that was never going to match.
+        session.browseFlow = undefined;
+        return "fallthrough";
       }
       enterScreen(session, { screen: "category_menu", stallId, stallName: stallName ?? "Stall" });
       await renderCategoryMenu(whatsappNumber, stallId, stallName ?? "Stall");
@@ -309,8 +328,8 @@ export async function handleBrowseFlowStep(
       const il = flow.current;
       const itemId = id.startsWith("item:") ? id.slice(5) : session.knownItems[text.trim()];
       if (!itemId) {
-        await sendWhatsAppText(whatsappNumber, "Please pick an item from the list above.");
-        return "handled";
+        session.browseFlow = undefined;
+        return "fallthrough";
       }
       const item = await prisma.menuItem.findUnique({ where: { id: itemId } });
       if (!item || !item.available) {
@@ -345,29 +364,39 @@ export async function handleBrowseFlowStep(
       }
       if (id === "add_cart") {
         if (session.cart.length > 0 && session.activeStallId && session.activeStallId !== detail.stallId) {
-          await sendWhatsAppText(
+          // Must give an actual way forward here, not just a warning — free
+          // text like "clear"/"checkout" won't match anything on this screen
+          // and would otherwise trap the student in a "please choose above" loop.
+          await sendWhatsAppButtons(
             whatsappNumber,
-            "Your cart has items from a different stall — checkout or clear it first before adding from here.",
+            "Your cart has items from a different stall. Clear it and add this instead?",
+            [
+              { id: "conflict_clear", title: "🗑 Clear & Add" },
+              { id: "conflict_cancel", title: "❌ Cancel" },
+            ],
           );
           return "handled";
         }
-        const existing = session.cart.find((l) => l.itemId === detail.itemId && !l.variantId);
-        if (existing) existing.quantity += detail.quantity;
-        else {
-          const line: CartLine = {
-            itemId: detail.itemId,
-            itemName: detail.itemName,
-            unitPrice: detail.unitPrice,
-            quantity: detail.quantity,
-          };
-          session.cart.push(line);
-        }
-        session.activeStallId = detail.stallId;
-        session.knownItems = rememberNames(session.knownItems, [[detail.itemName, detail.itemId]]);
+        addDetailToCart(session, detail);
         await sendWhatsAppText(whatsappNumber, `Added ${detail.quantity}x ${detail.itemName} to your cart. 🛒`);
         // Never jump straight to checkout after one add — return to the item list.
         const prev = goBack(session);
         if (prev) await renderScreen(whatsappNumber, session, prev);
+        return "handled";
+      }
+      if (id === "conflict_clear") {
+        session.cart = [];
+        session.activeStallId = undefined;
+        addDetailToCart(session, detail);
+        await sendWhatsAppText(whatsappNumber, `Cleared your old cart and added ${detail.quantity}x ${detail.itemName}. 🛒`);
+        const prev = goBack(session);
+        if (prev) await renderScreen(whatsappNumber, session, prev);
+        return "handled";
+      }
+      if (id === "conflict_cancel") {
+        const prev = goBack(session);
+        if (prev) await renderScreen(whatsappNumber, session, prev);
+        else session.browseFlow = undefined;
         return "handled";
       }
       if (id === "continue_shop") {
@@ -376,8 +405,11 @@ export async function handleBrowseFlowStep(
         else session.browseFlow = undefined;
         return "handled";
       }
-      await sendWhatsAppText(whatsappNumber, "Please choose one of the options above.");
-      return "handled";
+      // Unrecognized input on this screen (a stray typed message, not a
+      // tapped option) — clear the flow and let the AI loop handle it
+      // instead of repeating "please choose above" forever.
+      session.browseFlow = undefined;
+      return "fallthrough";
     }
 
     default:
