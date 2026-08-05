@@ -4,10 +4,13 @@ import {
   Activity,
   AlertTriangle,
   CheckCircle2,
+  Eye,
+  EyeOff,
   IndianRupee,
   KeyRound,
   LayoutGrid,
   List,
+  Lock,
   MapPin,
   Moon,
   PauseCircle,
@@ -1210,13 +1213,21 @@ function AssignOwnerForm({ stalls, onAssigned }: { stalls: Stall[]; onAssigned: 
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [stallId, setStallId] = useState("");
   const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  const passwordsMismatch = confirmPassword.length > 0 && password !== confirmPassword;
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setStatus(null);
+    if (password !== confirmPassword) {
+      setStatus({ ok: false, text: "Passwords don't match." });
+      return;
+    }
     setSubmitting(true);
     try {
       await api("/api/admin/owners", {
@@ -1228,6 +1239,8 @@ function AssignOwnerForm({ stalls, onAssigned }: { stalls: Stall[]; onAssigned: 
       setPhone("");
       setEmail("");
       setPassword("");
+      setConfirmPassword("");
+      setShowPassword(false);
       setStallId("");
       onAssigned();
     } catch (err) {
@@ -1257,11 +1270,23 @@ function AssignOwnerForm({ stalls, onAssigned }: { stalls: Stall[]; onAssigned: 
           </div>
           <div className="field">
             <label>Owner name</label>
-            <input placeholder="e.g. Ramesh Kumar" value={name} onChange={(e) => setName(e.target.value)} required />
+            <input
+              placeholder="e.g. Ramesh Kumar"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              autoComplete="off"
+              required
+            />
           </div>
           <div className="field">
             <label>Phone number</label>
-            <input placeholder="e.g. 9876543210" value={phone} onChange={(e) => setPhone(e.target.value)} required />
+            <input
+              placeholder="e.g. 9876543210"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              autoComplete="off"
+              required
+            />
           </div>
           <div className="field">
             <label>Email (optional — needed for Google sign-in)</label>
@@ -1270,20 +1295,62 @@ function AssignOwnerForm({ stalls, onAssigned }: { stalls: Stall[]; onAssigned: 
               placeholder="owner@example.com"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              autoComplete="off"
             />
           </div>
           <div className="field">
             <label>Temporary password</label>
-            <input
-              type="password"
-              placeholder="At least 6 characters"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              minLength={6}
-            />
+            <div className="field-icon-wrap">
+              <span className="field-icon" aria-hidden>
+                <Lock size={15} strokeWidth={2} />
+              </span>
+              <input
+                type={showPassword ? "text" : "password"}
+                placeholder="At least 6 characters"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="new-password"
+                required
+                minLength={6}
+              />
+              <button
+                type="button"
+                className="toggle-visibility"
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                onClick={() => setShowPassword((v) => !v)}
+              >
+                {showPassword ? <EyeOff size={15} strokeWidth={2} /> : <Eye size={15} strokeWidth={2} />}
+              </button>
+            </div>
           </div>
-          <button type="submit" className="primary" disabled={submitting}>
+          <div className="field">
+            <label>Confirm password</label>
+            <div className="field-icon-wrap">
+              <span className="field-icon" aria-hidden>
+                <Lock size={15} strokeWidth={2} />
+              </span>
+              <input
+                type={showPassword ? "text" : "password"}
+                placeholder="Re-enter the password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                autoComplete="new-password"
+                required
+                minLength={6}
+                aria-invalid={passwordsMismatch}
+              />
+              <button
+                type="button"
+                className="toggle-visibility"
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                onClick={() => setShowPassword((v) => !v)}
+              >
+                {showPassword ? <EyeOff size={15} strokeWidth={2} /> : <Eye size={15} strokeWidth={2} />}
+              </button>
+            </div>
+            {passwordsMismatch && <span className="field-error">Passwords don't match.</span>}
+          </div>
+          <button type="submit" className="primary" disabled={submitting || passwordsMismatch}>
             {submitting ? "Creating…" : "Create owner login"}
           </button>
           {status && (

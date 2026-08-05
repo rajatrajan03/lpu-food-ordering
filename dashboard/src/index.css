@@ -227,6 +227,7 @@ input:focus, select:focus, button:focus-visible {
 }
 label { font-size: 0.82rem; font-weight: 600; color: var(--muted); display: block; margin-bottom: 0.35rem; }
 .field { display: flex; flex-direction: column; }
+.field-error { font-size: 0.78rem; color: var(--danger); margin-top: 0.35rem; }
 
 /* ---- Ambient background ---- */
 .ambient-bg { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
