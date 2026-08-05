@@ -26,6 +26,9 @@ import {
   sendPostOrderActions,
   POST_ORDER_TRACK_ID,
   POST_ORDER_CANCEL_PREFIX,
+  buildOrderStatusBlock,
+  buildOrderStatusRows,
+  handleOrderStatusPick,
 } from "./browseFlow";
 
 // Gemini's function-calling format wants {name, description, parametersJsonSchema}
@@ -167,21 +170,13 @@ function formatSlotTime(t: Date): string {
   });
 }
 
-const ORDER_STATUS_EMOJI: Partial<Record<string, string>> = {
-  placed: "🕐",
-  accepted: "✅",
-  preparing: "👨‍🍳",
-  ready: "🎉",
-  completed: "✔️",
-  cancelled: "❌",
-  rejected: "🚫",
-};
-
 /** Populated by the get_pickup_slots case so the caller can follow up with a tappable list. */
 interface ToolSideEffects {
   pickupSlotRows?: ListRow[];
   /** Set by place_order so the caller can follow up with Track/Cancel buttons for the new order. */
   placedOrderId?: string;
+  /** Set by get_order_status when there's more than one active order, so the caller can follow up with a picker. */
+  orderStatusRows?: ListRow[];
 }
 
 // ---------------------------------------------------------------------------
@@ -508,18 +503,18 @@ async function executeTool(
       if (orders.length === 0) {
         return { orders: [], summary: "You have no active orders right now." };
       }
-      // Same reasoning as place_order — build the full display text here
-      // (times, layout) so the model never has to interpret a raw UTC
-      // timestamp or reinvent formatting for something already correct.
-      const blocks = orders.map((o) => {
-        const items = o.items.map((i) => `${i.quantity}x ${i.itemNameSnapshot}`).join(", ");
-        const pickupTime = `${formatSlotTime(o.pickupSlot.startTime)} – ${formatSlotTime(o.pickupSlot.endTime)}`;
-        const emoji = ORDER_STATUS_EMOJI[o.status] ?? "📦";
-        return `${emoji} #${o.id.slice(0, 6)} — ${o.stall.name}\n${items}\nTotal: ₹${Number(o.totalAmount)}\nPickup: ${pickupTime}\nStatus: ${o.status}`;
-      });
+      if (orders.length === 1) {
+        return {
+          orders: [{ id: orders[0].id, status: orders[0].status, stall: orders[0].stall.name }],
+          summary: buildOrderStatusBlock(orders[0]),
+        };
+      }
+      // More than one active order at once — let the student pick which one
+      // rather than dumping every order's full detail in a single message.
+      sideEffects.orderStatusRows = buildOrderStatusRows(orders);
       return {
         orders: orders.map((o) => ({ id: o.id, status: o.status, stall: o.stall.name })),
-        summary: blocks.join("\n\n"),
+        summary: "You have multiple active orders — pick one below.",
       };
     }
 
@@ -702,6 +697,8 @@ export async function handleIncomingMessage(
     return persistAndReturn();
   }
   if (interactiveId) {
+    const handledStatusPick = await handleOrderStatusPick(whatsappNumber, interactiveId, student.id);
+    if (handledStatusPick) return persistAndReturn();
     const handledMore = await handleMoreSelection(whatsappNumber, interactiveId, student.id, session);
     if (handledMore) return persistAndReturn();
   }
@@ -792,6 +789,9 @@ export async function handleIncomingMessage(
   }
   if (sideEffects.placedOrderId) {
     await sendPostOrderActions(whatsappNumber, sideEffects.placedOrderId);
+  }
+  if (sideEffects.orderStatusRows?.length) {
+    await sendWhatsAppList(whatsappNumber, "You have multiple active orders — which one?", "Choose order", sideEffects.orderStatusRows);
   }
 
   return finalReply;

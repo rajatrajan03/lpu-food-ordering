@@ -47,6 +47,60 @@ const ORDER_STATUS_EMOJI: Partial<Record<string, string>> = {
   rejected: "🚫",
 };
 
+type ActiveOrder = Awaited<ReturnType<typeof orderService.getActiveOrdersForStudent>>[number];
+
+/** One order's full status block — stall, items, total, IST pickup time, status. */
+export function buildOrderStatusBlock(o: ActiveOrder): string {
+  const items = o.items.map((i) => `${i.quantity}x ${i.itemNameSnapshot}`).join(", ");
+  const pickupTime = `${formatSlotTime(o.pickupSlot.startTime)} – ${formatSlotTime(o.pickupSlot.endTime)}`;
+  const emoji = ORDER_STATUS_EMOJI[o.status] ?? "📦";
+  return `${emoji} #${o.id.slice(0, 6)} — ${o.stall.name}\n${items}\nTotal: ₹${Number(o.totalAmount)}\nPickup: ${pickupTime}\nStatus: ${o.status}`;
+}
+
+export const ORDER_STATUS_PICK_PREFIX = "order_status:";
+
+/** List rows for picking which active order to check, when there's more than one at once. */
+export function buildOrderStatusRows(orders: ActiveOrder[]): ListRow[] {
+  return orders.map((o) => ({
+    id: `${ORDER_STATUS_PICK_PREFIX}${o.id}`,
+    title: `#${o.id.slice(0, 6)} - ${o.stall.name}`.slice(0, 24),
+    description: o.status,
+  }));
+}
+
+/** Sends the single order's status directly, or (if more than one is active) a picker list first. */
+export async function sendOrderStatus(whatsappNumber: string, studentId: string): Promise<void> {
+  const orders = await orderService.getActiveOrdersForStudent(studentId);
+  if (orders.length === 0) {
+    await sendWhatsAppText(whatsappNumber, "You have no active orders right now.");
+    return;
+  }
+  if (orders.length === 1) {
+    await sendWhatsAppText(whatsappNumber, buildOrderStatusBlock(orders[0]));
+    return;
+  }
+  await sendWhatsAppList(
+    whatsappNumber,
+    "You have multiple active orders — which one?",
+    "Choose order",
+    buildOrderStatusRows(orders),
+  );
+}
+
+/** Handles a tap on an order-status picker row. Returns false if `id` isn't one of them. */
+export async function handleOrderStatusPick(whatsappNumber: string, id: string, studentId: string): Promise<boolean> {
+  if (!id.startsWith(ORDER_STATUS_PICK_PREFIX)) return false;
+  const orderId = id.slice(ORDER_STATUS_PICK_PREFIX.length);
+  const orders = await orderService.getActiveOrdersForStudent(studentId);
+  const order = orders.find((o) => o.id === orderId);
+  if (!order) {
+    await sendWhatsAppText(whatsappNumber, "That order isn't active anymore.");
+    return true;
+  }
+  await sendWhatsAppText(whatsappNumber, buildOrderStatusBlock(order));
+  return true;
+}
+
 export async function sendHomeScreen(whatsappNumber: string, name: string | null, session: SessionState): Promise<void> {
   session.browseFlow = undefined;
   const greetName = name ? `, ${name}` : "";
@@ -100,18 +154,7 @@ export async function handleMoreSelection(
       return true;
     }
     case MORE_ROW_IDS.track: {
-      const orders = await orderService.getActiveOrdersForStudent(studentId);
-      if (orders.length === 0) {
-        await sendWhatsAppText(whatsappNumber, "You have no active orders.");
-        return true;
-      }
-      const blocks = orders.map((o) => {
-        const items = o.items.map((i) => `${i.quantity}x ${i.itemNameSnapshot}`).join(", ");
-        const pickupTime = `${formatSlotTime(o.pickupSlot.startTime)} – ${formatSlotTime(o.pickupSlot.endTime)}`;
-        const emoji = ORDER_STATUS_EMOJI[o.status] ?? "📦";
-        return `${emoji} #${o.id.slice(0, 6)} — ${o.stall.name}\n${items}\nTotal: ₹${Number(o.totalAmount)}\nPickup: ${pickupTime}\nStatus: ${o.status}`;
-      });
-      await sendWhatsAppText(whatsappNumber, blocks.join("\n\n"));
+      await sendOrderStatus(whatsappNumber, studentId);
       return true;
     }
     case MORE_ROW_IDS.recent: {
