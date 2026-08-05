@@ -26,6 +26,9 @@ export const MORE_ROW_IDS = {
 };
 const NAV_BACK = "nav_back";
 const NAV_HOME = "nav_home";
+const POST_ADD_CONTINUE_ID = "post_add_continue";
+const POST_ADD_CART_ID = "post_add_cart";
+const POST_ADD_CHECKOUT_ID = "post_add_checkout";
 
 /** Formats a Prisma @db.Time value as "9:00 AM" in IST — the production server runs in UTC. */
 function formatSlotTime(t: Date): string {
@@ -122,6 +125,23 @@ export async function sendPostOrderActions(whatsappNumber: string, orderId: stri
   ]);
 }
 
+/** Shared cart-summary text — used by the More menu's View Cart row and the post-add-to-cart prompt. */
+function buildCartSummary(session: SessionState): string {
+  if (session.cart.length === 0) return "Your cart is empty.";
+  const total = session.cart.reduce((s, l) => s + l.unitPrice * l.quantity, 0);
+  const lines = session.cart.map((l) => `${l.quantity}x ${l.itemName} — ₹${l.unitPrice * l.quantity}`).join("\n");
+  return `🛒 Your cart:\n${lines}\nTotal: ₹${total}`;
+}
+
+/** Sent right after Add To Cart — an explicit next step instead of silently dropping back into the item list. */
+async function sendPostAddButtons(whatsappNumber: string): Promise<void> {
+  await sendWhatsAppButtons(whatsappNumber, "What would you like to do next?", [
+    { id: POST_ADD_CONTINUE_ID, title: "➕ Add More" },
+    { id: POST_ADD_CART_ID, title: "🛒 View Cart" },
+    { id: POST_ADD_CHECKOUT_ID, title: "✅ Checkout" },
+  ]);
+}
+
 export async function sendMoreMenu(whatsappNumber: string): Promise<void> {
   const rows: ListRow[] = [
     { id: MORE_ROW_IDS.cart, title: "🛒 View Cart" },
@@ -144,13 +164,9 @@ export async function handleMoreSelection(
 ): Promise<boolean> {
   switch (id) {
     case MORE_ROW_IDS.cart: {
-      if (session.cart.length === 0) {
-        await sendWhatsAppText(whatsappNumber, "Your cart is empty.");
-        return true;
-      }
-      const total = session.cart.reduce((s, l) => s + l.unitPrice * l.quantity, 0);
-      const lines = session.cart.map((l) => `${l.quantity}x ${l.itemName} — ₹${l.unitPrice * l.quantity}`).join("\n");
-      await sendWhatsAppText(whatsappNumber, `🛒 Your cart:\n${lines}\nTotal: ₹${total}\n\nSay "checkout" when ready.`);
+      const summary = buildCartSummary(session);
+      const suffix = session.cart.length > 0 ? '\n\nSay "checkout" when ready.' : "";
+      await sendWhatsAppText(whatsappNumber, summary + suffix);
       return true;
     }
     case MORE_ROW_IDS.track: {
@@ -364,6 +380,22 @@ export async function handleBrowseFlowStep(
     await renderScreen(whatsappNumber, session, prev);
     return "handled";
   }
+  if (id === POST_ADD_CONTINUE_ID) {
+    await renderScreen(whatsappNumber, session, flow.current);
+    return "handled";
+  }
+  if (id === POST_ADD_CART_ID) {
+    await sendWhatsAppText(whatsappNumber, buildCartSummary(session));
+    await sendPostAddButtons(whatsappNumber);
+    return "handled";
+  }
+  if (id === POST_ADD_CHECKOUT_ID) {
+    // "Checkout" isn't a browse-flow screen — hand off to the normal AI
+    // loop exactly like typing "checkout" would, so the existing
+    // pickup-slot/confirmation flow runs unchanged.
+    session.browseFlow = undefined;
+    return "fallthrough";
+  }
 
   switch (flow.current.screen) {
     case "location_list": {
@@ -458,9 +490,12 @@ export async function handleBrowseFlowStep(
         }
         addDetailToCart(session, detail);
         await sendWhatsAppText(whatsappNumber, `Added ${detail.quantity}x ${detail.itemName} to your cart. 🛒`);
-        // Never jump straight to checkout after one add — return to the item list.
-        const prev = goBack(session);
-        if (prev) await renderScreen(whatsappNumber, session, prev);
+        // Never jump straight to checkout after one add, but don't just
+        // silently drop back into the item list either — an explicit next
+        // step (add more / view full cart / checkout) beats making the
+        // student guess that typing "checkout" works.
+        goBack(session);
+        await sendPostAddButtons(whatsappNumber);
         return "handled";
       }
       if (id === "conflict_clear") {
@@ -468,8 +503,8 @@ export async function handleBrowseFlowStep(
         session.activeStallId = undefined;
         addDetailToCart(session, detail);
         await sendWhatsAppText(whatsappNumber, `Cleared your old cart and added ${detail.quantity}x ${detail.itemName}. 🛒`);
-        const prev = goBack(session);
-        if (prev) await renderScreen(whatsappNumber, session, prev);
+        goBack(session);
+        await sendPostAddButtons(whatsappNumber);
         return "handled";
       }
       if (id === "conflict_cancel") {
