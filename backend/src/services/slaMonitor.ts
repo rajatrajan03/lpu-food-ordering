@@ -1,7 +1,9 @@
 import { prisma } from "../lib/prisma";
-import { sendWhatsAppText } from "../whatsapp/client";
+import { sendWhatsAppList, type ListRow } from "../whatsapp/client";
 import * as menuService from "./menuService";
 import { transitionOrderStatus, slotEndInstant, DEFAULT_PICKUP_GRACE_MINUTES } from "./orderService";
+import { getSessionState } from "../ai/conversationEngine";
+import { rememberNames } from "../ai/tools";
 
 // ---------------------------------------------------------------------------
 // Order SLA & Accountability — a lightweight in-process sweep (setInterval),
@@ -14,19 +16,38 @@ import { transitionOrderStatus, slotEndInstant, DEFAULT_PICKUP_GRACE_MINUTES } f
 
 const SWEEP_INTERVAL_MS = 60_000;
 
-/** Best-effort "here's what else is nearby" follow-up after an auto-reject — never blocks the reject itself. */
-async function suggestAlternativeStalls(
-  studentWhatsappNumber: string,
-  originalStallId: string,
-  area: string | null,
-): Promise<void> {
+/**
+ * Best-effort "here's what else is nearby" follow-up after an auto-reject —
+ * never blocks the reject itself. Sends a real tappable stall list (same id
+ * scheme as the Browse Stalls flow, `stall:<id>`) and primes the student's
+ * browseFlow to the same "stall_list" screen they'd be on had they picked
+ * this area from Browse Stalls — so tapping one continues straight into the
+ * normal category -> item -> cart flow instead of dead-ending as a suggestion.
+ */
+async function suggestAlternativeStalls(studentId: string, originalStallId: string, area: string | null): Promise<void> {
   if (!area) return;
   try {
     const nearby = await menuService.listStalls({ area, limit: 4 });
     const options = nearby.filter((s) => s.id !== originalStallId).slice(0, 3);
     if (options.length === 0) return;
-    const lines = options.map((s, i) => `${i + 1}. ${s.name}${s.block ? ` — ${s.block}` : ""}`).join("\n");
-    await sendWhatsAppText(studentWhatsappNumber, `You could also try:\n${lines}`);
+
+    const student = await prisma.student.findUnique({ where: { id: studentId } });
+    if (!student) return;
+
+    const rows: ListRow[] = options.map((s) => ({
+      id: `stall:${s.id}`,
+      title: s.name.slice(0, 24),
+      description: s.block ?? undefined,
+    }));
+    await sendWhatsAppList(student.whatsappNumber, `Other stalls near ${area}:`, "Choose stall", rows);
+
+    const session = getSessionState(student.sessionState);
+    session.knownStalls = rememberNames(session.knownStalls, options.map((s) => [s.name, s.id]));
+    session.browseFlow = {
+      current: { screen: "stall_list", area },
+      stack: [{ screen: "location_list" }],
+    };
+    await prisma.student.update({ where: { id: studentId }, data: { sessionState: session as unknown as object } });
   } catch (err) {
     console.error("SLA sweep: failed to suggest alternative stalls:", err);
   }
@@ -37,12 +58,15 @@ async function sweepUnansweredOrders(): Promise<void> {
   const now = new Date();
   const overdue = await prisma.order.findMany({
     where: { status: "placed", acceptDeadline: { lte: now } },
-    include: { stall: true, student: true },
+    include: { stall: true },
   });
   for (const order of overdue) {
     try {
+      // transitionOrderStatus awaits the rejection notification internally,
+      // so it's guaranteed to have gone out before the alternatives list —
+      // matters here since both are separate WhatsApp messages to the same chat.
       await transitionOrderStatus(order.id, order.stallId, "rejected", { auto: true });
-      await suggestAlternativeStalls(order.student.whatsappNumber, order.stallId, order.stall.area);
+      await suggestAlternativeStalls(order.studentId, order.stallId, order.stall.area);
     } catch (err) {
       console.error(`SLA sweep: failed to auto-reject order ${order.id}:`, err);
     }

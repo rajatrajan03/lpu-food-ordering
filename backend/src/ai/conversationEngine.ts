@@ -102,7 +102,14 @@ function truncateForHistory(text: string): string {
     : text;
 }
 
-function getSessionState(raw: unknown): SessionState {
+/**
+ * Reconstructs SessionState from the raw JSON column, explicitly whitelisting
+ * every field — a field left out here gets silently dropped on every reload.
+ * Exported so anything writing to sessionState outside the normal
+ * request/reply cycle (e.g. slaMonitor's proactive alternative-stall
+ * suggestion) reuses this instead of re-deriving the same whitelist.
+ */
+export function getSessionState(raw: unknown): SessionState {
   if (!raw || typeof raw !== "object") return emptySessionState();
   const s = raw as Partial<SessionState>;
   return {

@@ -36,22 +36,29 @@ const STATUS_LINES: Partial<Record<OrderStatus, string>> = {
   ready: "Ready for pickup!",
 };
 
-/** Fire-and-forget — a notification failure shouldn't fail the status transition itself. */
-function notifyStudentOfStatus(order: { displayId: string; studentId: string; status: OrderStatus; stallId: string }) {
+/**
+ * Awaited by the caller so any follow-up message (e.g. slaMonitor's
+ * alternative-stall suggestion after an auto-reject) is guaranteed to be
+ * sent after this one — but errors are swallowed internally so a
+ * notification failure never fails the status transition itself.
+ */
+async function notifyStudentOfStatus(order: {
+  displayId: string;
+  studentId: string;
+  status: OrderStatus;
+  stallId: string;
+}): Promise<void> {
   const line = STATUS_LINES[order.status];
   if (!line) return;
-  prisma.student
-    .findUnique({ where: { id: order.studentId } })
-    .then(async (student) => {
-      if (!student) return;
-      const stall = await prisma.stall.findUnique({ where: { id: order.stallId } });
-      if (!stall) return;
-      await sendWhatsAppText(
-        student.whatsappNumber,
-        `*Order Update* — ${stall.name} (#${order.displayId})\n${line}`,
-      );
-    })
-    .catch((err) => console.error("Failed to send order status WhatsApp notification:", err));
+  try {
+    const student = await prisma.student.findUnique({ where: { id: order.studentId } });
+    if (!student) return;
+    const stall = await prisma.stall.findUnique({ where: { id: order.stallId } });
+    if (!stall) return;
+    await sendWhatsAppText(student.whatsappNumber, `*Order Update* — ${stall.name} (#${order.displayId})\n${line}`);
+  } catch (err) {
+    console.error("Failed to send order status WhatsApp notification:", err);
+  }
 }
 
 const CANCELLABLE_STATUSES: OrderStatus[] = ["placed", "accepted"];
@@ -228,8 +235,8 @@ export async function transitionOrderStatus(
     }
 
     return tx.order.update({ where: { id: orderId }, data });
-  }).then((order) => {
-    notifyStudentOfStatus(order);
+  }).then(async (order) => {
+    await notifyStudentOfStatus(order);
     // Learned preferences (favorite stall/meal-period/usual order) are only
     // ever built from orders the student actually collected — a no-show
     // shouldn't shape future "usual order" suggestions.
