@@ -490,7 +490,7 @@ async function executeTool(
         const stall = await prisma.stall.findUnique({ where: { id: stallId }, select: { name: true } });
         const itemLines = order.items.map((i) => `${i.quantity}x ${i.itemNameSnapshot}`).join(", ");
         const pickupTime = `${formatSlotTime(order.pickupSlot.startTime)} – ${formatSlotTime(order.pickupSlot.endTime)}`;
-        const summary = `✅ Order placed! #${order.id.slice(0, 6)} — ${stall?.name ?? "your stall"}\n${itemLines}\nTotal: ₹${Number(order.totalAmount)}\nPickup: ${pickupTime}`;
+        const summary = `✅ Order placed! #${order.displayId} — ${stall?.name ?? "your stall"}\n${itemLines}\nTotal: ₹${Number(order.totalAmount)}\nPickup: ${pickupTime}`;
         sideEffects.placedOrderId = order.id;
         return { order, summary };
       } catch (err) {
@@ -505,7 +505,7 @@ async function executeTool(
       }
       if (orders.length === 1) {
         return {
-          orders: [{ id: orders[0].id, status: orders[0].status, stall: orders[0].stall.name }],
+          orders: [{ id: orders[0].displayId, status: orders[0].status, stall: orders[0].stall.name }],
           summary: buildOrderStatusBlock(orders[0]),
         };
       }
@@ -513,14 +513,15 @@ async function executeTool(
       // rather than dumping every order's full detail in a single message.
       sideEffects.orderStatusRows = buildOrderStatusRows(orders);
       return {
-        orders: orders.map((o) => ({ id: o.id, status: o.status, stall: o.stall.name })),
+        orders: orders.map((o) => ({ id: o.displayId, status: o.status, stall: o.stall.name })),
         summary: "You have multiple active orders — pick one below.",
       };
     }
 
     case "cancel_order":
       try {
-        return { order: await orderService.cancelOrder(args.order_id as string, studentId) };
+        const order = await orderService.cancelOrder(args.order_id as string, studentId);
+        return { order: { id: order.displayId, status: order.status } };
       } catch (err) {
         return { error: err instanceof orderService.OrderError ? err.message : "Could not cancel the order." };
       }
@@ -530,7 +531,7 @@ async function executeTool(
       session.knownStalls = rememberNames(session.knownStalls, orders.map((o) => [o.stall.name, o.stallId]));
       return {
         orders: orders.map((o) => ({
-          id: o.id,
+          id: o.displayId,
           status: o.status,
           stall: o.stall.name,
           placedAt: o.placedAt,

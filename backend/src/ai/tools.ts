@@ -138,7 +138,12 @@ export const toolDefinitions: Groq.Chat.Completions.ChatCompletionTool[] = [
         "Cancel an active order. Will fail if the stall has already started preparing it — relay that to the student if so.",
       parameters: {
         type: "object",
-        properties: { order_id: { type: "string" } },
+        properties: {
+          order_id: {
+            type: "string",
+            description: "The order's id (its ORD-XXXXXXXX number) as returned by a previous get_order_status/get_order_history call.",
+          },
+        },
         required: ["order_id"],
       },
     },

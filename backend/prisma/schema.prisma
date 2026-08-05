@@ -211,6 +211,10 @@ model PickupSlot {
 
 model Order {
   id             String      @id @default(uuid())
+  // Random customer-facing order number (ORD-XXXXXXXX) — deliberately
+  // unrelated to `id` or `placedAt` so it never leaks sequence, daily
+  // order count, or timing. `id` stays the internal key for all lookups.
+  displayId      String      @unique @map("display_id")
   studentId      String      @map("student_id")
   stallId        String      @map("stall_id")
   pickupSlotId   String      @map("pickup_slot_id")

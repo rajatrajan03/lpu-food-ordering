@@ -42,6 +42,7 @@ interface OrderItem {
 
 interface Order {
   id: string;
+  displayId: string;
   status: "placed" | "accepted" | "rejected" | "preparing" | "ready" | "completed" | "cancelled";
   totalAmount: string;
   placedAt: string;
@@ -49,6 +50,20 @@ interface Order {
   items: OrderItem[];
   pickupSlot: { startTime: string; endTime: string };
   student: { whatsappNumber: string; name: string | null };
+}
+
+/** Exact placed-at timestamp for staff-facing views (order cards, KOT) — students only ever see the order number, never this. */
+function formatPlacedAt(iso: string): string {
+  return new Date(iso).toLocaleString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+    timeZone: "Asia/Kolkata",
+  });
 }
 
 const NEXT_ACTIONS: Record<Order["status"], { label: string; status: string; variant: string }[]> = {
@@ -577,6 +592,10 @@ function OrderCard({
           <Clock3 size={13} strokeWidth={2.25} />
           {new Date(order.pickupSlot.startTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
         </span>
+      </div>
+      <div className="row between order-meta-row">
+        <span className="order-display-id">#{order.displayId}</span>
+        <span className="muted">Placed At: {formatPlacedAt(order.placedAt)}</span>
       </div>
       <ul className="order-item-list">
         {order.items.map((item) => (

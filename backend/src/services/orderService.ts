@@ -1,9 +1,25 @@
+import { randomInt } from "crypto";
 import { prisma } from "../lib/prisma";
 import { OrderStatus } from "@prisma/client";
 import { sendWhatsAppText } from "../whatsapp/client";
 import { recomputeStudentPreferences } from "./preferenceService";
 
 export class OrderError extends Error {}
+
+// Customer-facing order number — random and unrelated to id/placedAt/count
+// on purpose, so it never reveals order sequence, daily volume, or timing.
+// 8 chars from a 36-symbol alphabet is ~2.8 trillion combinations, so a
+// collision is not worth defensive retry logic at this app's scale.
+const DISPLAY_ID_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+const DISPLAY_ID_LENGTH = 8;
+
+function generateDisplayId(): string {
+  let code = "";
+  for (let i = 0; i < DISPLAY_ID_LENGTH; i++) {
+    code += DISPLAY_ID_CHARS[randomInt(DISPLAY_ID_CHARS.length)];
+  }
+  return `ORD-${code}`;
+}
 
 // WhatsApp renders *text* as bold — used here for a consistent, clean header
 // line instead of a wall of casual emoji, per feedback that the old copy
@@ -16,7 +32,7 @@ const STATUS_LINES: Partial<Record<OrderStatus, string>> = {
 };
 
 /** Fire-and-forget — a notification failure shouldn't fail the status transition itself. */
-function notifyStudentOfStatus(order: { id: string; studentId: string; status: OrderStatus; stallId: string }) {
+function notifyStudentOfStatus(order: { displayId: string; studentId: string; status: OrderStatus; stallId: string }) {
   const line = STATUS_LINES[order.status];
   if (!line) return;
   prisma.student
@@ -25,10 +41,9 @@ function notifyStudentOfStatus(order: { id: string; studentId: string; status: O
       if (!student) return;
       const stall = await prisma.stall.findUnique({ where: { id: order.stallId } });
       if (!stall) return;
-      const shortId = order.id.slice(0, 8);
       await sendWhatsAppText(
         student.whatsappNumber,
-        `*Order Update* — ${stall.name} (#${shortId})\n${line}`,
+        `*Order Update* — ${stall.name} (#${order.displayId})\n${line}`,
       );
     })
     .catch((err) => console.error("Failed to send order status WhatsApp notification:", err));
@@ -105,6 +120,7 @@ export async function placeOrder(params: {
         stallId,
         pickupSlotId,
         totalAmount,
+        displayId: generateDisplayId(),
         items: { create: orderItemsData },
       },
       include: { items: true, pickupSlot: true },
@@ -114,9 +130,16 @@ export async function placeOrder(params: {
   });
 }
 
-export async function cancelOrder(orderId: string, studentId: string) {
+/**
+ * `orderIdentifier` accepts either the internal id (button-tap paths, which
+ * already have the real row id) or the customer-facing displayId (the AI
+ * tool-calling path, which never sees anything but displayId).
+ */
+export async function cancelOrder(orderIdentifier: string, studentId: string) {
   return prisma.$transaction(async (tx) => {
-    const order = await tx.order.findUnique({ where: { id: orderId } });
+    const order = await tx.order.findFirst({
+      where: { OR: [{ id: orderIdentifier }, { displayId: orderIdentifier }] },
+    });
     if (!order || order.studentId !== studentId) {
       throw new OrderError("Order not found.");
     }
@@ -130,7 +153,7 @@ export async function cancelOrder(orderId: string, studentId: string) {
       data: { bookedCount: { decrement: 1 } },
     });
     return tx.order.update({
-      where: { id: orderId },
+      where: { id: order.id },
       data: { status: "cancelled", cancelledReason: "Cancelled by student" },
     });
   });

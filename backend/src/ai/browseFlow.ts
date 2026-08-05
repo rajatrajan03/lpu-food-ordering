@@ -54,16 +54,16 @@ export function buildOrderStatusBlock(o: ActiveOrder): string {
   const items = o.items.map((i) => `${i.quantity}x ${i.itemNameSnapshot}`).join(", ");
   const pickupTime = `${formatSlotTime(o.pickupSlot.startTime)} – ${formatSlotTime(o.pickupSlot.endTime)}`;
   const emoji = ORDER_STATUS_EMOJI[o.status] ?? "📦";
-  return `${emoji} #${o.id.slice(0, 6)} — ${o.stall.name}\n${items}\nTotal: ₹${Number(o.totalAmount)}\nPickup: ${pickupTime}\nStatus: ${o.status}`;
+  return `${emoji} #${o.displayId} — ${o.stall.name}\n${items}\nTotal: ₹${Number(o.totalAmount)}\nPickup: ${pickupTime}\nStatus: ${o.status}`;
 }
 
 export const ORDER_STATUS_PICK_PREFIX = "order_status:";
 
-/** List rows for picking which active order to check, when there's more than one at once. */
+/** List rows for picking which active order to check, when there's more than one at once. Keyed on the internal id — displayId is shown, never used as a lookup key. */
 export function buildOrderStatusRows(orders: ActiveOrder[]): ListRow[] {
   return orders.map((o) => ({
     id: `${ORDER_STATUS_PICK_PREFIX}${o.id}`,
-    title: `#${o.id.slice(0, 6)} - ${o.stall.name}`.slice(0, 24),
+    title: `#${o.displayId} - ${o.stall.name}`.slice(0, 24),
     description: o.status,
   }));
 }
