@@ -4,6 +4,29 @@ import { handleIncomingMessage } from "../ai/conversationEngine";
 
 export const webhookRouter = Router();
 
+// Meta can (and does) deliver two messages from the same number close enough
+// together that their handleIncomingMessage calls overlap — both read the
+// same Student row before either has written back, silently losing one
+// side's update (onboarding fields, cart state). This chains each phone
+// number's calls so they run strictly one at a time, in arrival order,
+// while different numbers still process fully in parallel. Never evicted,
+// but each entry is just a settled-Promise reference — negligible memory
+// even at thousands of distinct numbers over the process lifetime.
+const perNumberQueue = new Map<string, Promise<unknown>>();
+
+function runSerialized<T>(key: string, task: () => Promise<T>): Promise<T> {
+  const prior = perNumberQueue.get(key) ?? Promise.resolve();
+  const result = prior.then(task, task);
+  perNumberQueue.set(
+    key,
+    result.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return result;
+}
+
 // Meta calls this once, at setup time, to verify you own the endpoint.
 webhookRouter.get("/", (req, res) => {
   const mode = req.query["hub.mode"];
@@ -49,7 +72,7 @@ webhookRouter.post("/", (req, res) => {
   if (!text) return;
 
   console.log("Processing message from", from, ":", text);
-  handleIncomingMessage(from, text, interactiveId)
+  runSerialized(from, () => handleIncomingMessage(from, text, interactiveId))
     .then((reply) => {
       if (reply === null) return; // engine already sent a reply directly (e.g. greeting buttons)
       console.log("Got reply from conversation engine, length:", reply?.length);

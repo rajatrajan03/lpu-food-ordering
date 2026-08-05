@@ -133,6 +133,35 @@ function buildCartSummary(session: SessionState): string {
   return `🛒 Your cart:\n${lines}\nTotal: ₹${total}`;
 }
 
+/**
+ * Deterministic checkout for the post-add Checkout button — sends the
+ * pickup-slot picker directly via menuService rather than routing "Checkout"
+ * through the AI as free text. The AI has occasionally misread that exact
+ * button title as an unrelated food query; a critical action like this
+ * shouldn't depend on the model correctly interpreting a button label.
+ * The student's next reply (a tapped/typed slot) still resolves through the
+ * normal AI loop via knownSlots, same as the AI-driven get_pickup_slots path.
+ */
+async function sendCheckoutPickupSlots(whatsappNumber: string, session: SessionState): Promise<void> {
+  if (!session.activeStallId || session.cart.length === 0) {
+    await sendWhatsAppText(whatsappNumber, "Your cart is empty — add something first.");
+    return;
+  }
+  const slots = await menuService.getAvailablePickupSlots(session.activeStallId);
+  if (slots.length === 0) {
+    await sendWhatsAppText(whatsappNumber, "No pickup slots are available right now — please try again shortly.");
+    return;
+  }
+  const labeled = slots.map((s) => ({
+    id: s.id,
+    time: `${formatSlotTime(s.startTime)} – ${formatSlotTime(s.endTime)}`,
+  }));
+  session.knownSlots = rememberNames(session.knownSlots, labeled.map((s) => [s.time, s.id]));
+  const rows: ListRow[] = labeled.map((s) => ({ id: s.id, title: s.time }));
+  session.browseFlow = undefined;
+  await sendWhatsAppList(whatsappNumber, "Pick a pickup time:", "Choose a slot", rows);
+}
+
 /** Sent right after Add To Cart — an explicit next step instead of silently dropping back into the item list. */
 async function sendPostAddButtons(whatsappNumber: string): Promise<void> {
   await sendWhatsAppButtons(whatsappNumber, "What would you like to do next?", [
@@ -390,11 +419,8 @@ export async function handleBrowseFlowStep(
     return "handled";
   }
   if (id === POST_ADD_CHECKOUT_ID) {
-    // "Checkout" isn't a browse-flow screen — hand off to the normal AI
-    // loop exactly like typing "checkout" would, so the existing
-    // pickup-slot/confirmation flow runs unchanged.
-    session.browseFlow = undefined;
-    return "fallthrough";
+    await sendCheckoutPickupSlots(whatsappNumber, session);
+    return "handled";
   }
 
   switch (flow.current.screen) {
