@@ -36,26 +36,41 @@ const STATUS_LINES: Partial<Record<OrderStatus, string>> = {
   ready: "Ready for pickup!",
 };
 
+/** Formats a Prisma @db.Time value as "9:00 AM" in IST — the production server runs in UTC. */
+function formatSlotTime(t: Date): string {
+  return new Date(t).toLocaleTimeString("en-IN", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: "Asia/Kolkata",
+  });
+}
+
 /**
  * Awaited by the caller so any follow-up message (e.g. slaMonitor's
  * alternative-stall suggestion after an auto-reject) is guaranteed to be
  * sent after this one — but errors are swallowed internally so a
  * notification failure never fails the status transition itself.
+ *
+ * Includes the full order detail (items, total, pickup time), not just a
+ * one-line status phrase — a student can easily have more than one order
+ * in flight, and updates for different orders land in the same WhatsApp
+ * thread with no way to separate them; the content itself has to make it
+ * obvious which order a given push is about.
  */
-async function notifyStudentOfStatus(order: {
-  displayId: string;
-  studentId: string;
-  status: OrderStatus;
-  stallId: string;
-}): Promise<void> {
+async function notifyStudentOfStatus(order: { id: string; studentId: string; status: OrderStatus }): Promise<void> {
   const line = STATUS_LINES[order.status];
   if (!line) return;
   try {
-    const student = await prisma.student.findUnique({ where: { id: order.studentId } });
-    if (!student) return;
-    const stall = await prisma.stall.findUnique({ where: { id: order.stallId } });
-    if (!stall) return;
-    await sendWhatsAppText(student.whatsappNumber, `*Order Update* — ${stall.name} (#${order.displayId})\n${line}`);
+    const full = await prisma.order.findUnique({
+      where: { id: order.id },
+      include: { items: true, pickupSlot: true, stall: true, student: true },
+    });
+    if (!full) return;
+    const items = full.items.map((i) => `${i.quantity}x ${i.itemNameSnapshot}`).join(", ");
+    const pickupTime = `${formatSlotTime(full.pickupSlot.startTime)} – ${formatSlotTime(full.pickupSlot.endTime)}`;
+    const text = `*Order Update* — ${full.stall.name} (#${full.displayId})\n${items}\nTotal: ₹${Number(full.totalAmount)}\nPickup: ${pickupTime}\n${line}`;
+    await sendWhatsAppText(full.student.whatsappNumber, text);
   } catch (err) {
     console.error("Failed to send order status WhatsApp notification:", err);
   }
