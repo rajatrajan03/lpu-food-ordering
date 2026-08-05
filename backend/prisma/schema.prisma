@@ -90,6 +90,10 @@ model Stall {
   nightOpen     Boolean     @default(false) @map("night_open")
   openingHours  Json?       @map("opening_hours")
   pickupNote    String?     @map("pickup_note")
+  // How long, past the pickup slot's end, a student has to collect a ready
+  // order before it's auto-closed as a no-show. Null falls back to the
+  // app-wide default (see orderService.DEFAULT_PICKUP_GRACE_MINUTES).
+  pickupGraceMinutes Int?   @map("pickup_grace_minutes")
   createdAt     DateTime    @default(now()) @map("created_at")
 
   owners       StallOwner[]     @relation("StallOwnerStalls")
@@ -223,6 +227,25 @@ model Order {
   cancelledReason String?    @map("cancelled_reason")
   placedAt       DateTime    @default(now()) @map("placed_at")
   updatedAt      DateTime    @updatedAt @map("updated_at")
+
+  // --- Order SLA & Accountability ---
+  // Owner has until this instant to accept/reject before the system
+  // auto-rejects on their behalf (no penalty to the owner either way).
+  acceptDeadline      DateTime? @map("accept_deadline")
+  acceptedAt          DateTime? @map("accepted_at")
+  // True only when the SYSTEM auto-rejected an unanswered order — kept
+  // distinct from an owner's own reject decision so it's never counted
+  // against the owner in any future accountability metric.
+  autoRejected        Boolean   @default(false) @map("auto_rejected")
+  // When the owner actually marked the order ready, and whether that was
+  // after the pickup slot had already ended.
+  readyAt             DateTime? @map("ready_at")
+  slaViolation        Boolean   @default(false) @map("sla_violation")
+  slaViolationMinutes Int?      @map("sla_violation_minutes")
+  // Order was ready but never collected within the pickup slot + grace
+  // period — closed out automatically, never counted against the owner.
+  noShow              Boolean   @default(false) @map("no_show")
+  noShowAt            DateTime? @map("no_show_at")
 
   student    Student     @relation(fields: [studentId], references: [id])
   stall      Stall       @relation(fields: [stallId], references: [id])

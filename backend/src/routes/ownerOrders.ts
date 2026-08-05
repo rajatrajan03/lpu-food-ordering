@@ -3,7 +3,13 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { requireAuth } from "../lib/auth";
 import { asyncHandler } from "../lib/asyncHandler";
-import { getCompletedOrdersToday, getOrderQueueForStall, transitionOrderStatus, OrderError } from "../services/orderService";
+import {
+  getCompletedOrdersToday,
+  getOrderQueueForStall,
+  getSlaMetricsForStall,
+  transitionOrderStatus,
+  OrderError,
+} from "../services/orderService";
 
 export const ownerOrdersRouter = Router();
 ownerOrdersRouter.use(requireAuth("stall_owner"));
@@ -34,6 +40,17 @@ ownerOrdersRouter.get(
       return res.status(403).json({ error: "You do not manage this stall." });
     }
     res.json(await getCompletedOrdersToday(stallId));
+  }),
+);
+
+ownerOrdersRouter.get(
+  "/stalls/:stallId/sla-metrics",
+  asyncHandler(async (req, res) => {
+    const { stallId } = req.params;
+    if (!(await assertOwnsStall(req.auth!.id, stallId))) {
+      return res.status(403).json({ error: "You do not manage this stall." });
+    }
+    res.json(await getSlaMetricsForStall(stallId));
   }),
 );
 

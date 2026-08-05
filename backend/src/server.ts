@@ -6,6 +6,7 @@ import { webhookRouter } from "./routes/webhook";
 import { authRouter } from "./routes/auth";
 import { ownerOrdersRouter } from "./routes/ownerOrders";
 import { adminRouter } from "./routes/adminStalls";
+import { startSlaMonitor } from "./services/slaMonitor";
 
 // Last-resort safety net: a bug or a transient failure (e.g. a momentary DB
 // blip) anywhere we didn't anticipate should never take the whole process
@@ -58,3 +59,7 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
 
 const port = Number(process.env.PORT) || 3000;
 app.listen(port, () => console.log(`Backend listening on port ${port}`));
+
+// Order SLA & Accountability sweep — auto-reject/SLA-violation/no-show
+// checks, running every minute in-process (see services/slaMonitor.ts).
+startSlaMonitor();

@@ -437,6 +437,14 @@ label { font-size: 0.82rem; font-weight: 600; color: var(--muted); display: bloc
   box-shadow: var(--shadow-sm);
   transition: box-shadow 0.2s ease, transform 0.2s ease, border-color 0.2s ease;
 }
+.section-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: 1.6rem 0 0.6rem;
+}
 .card-title {
   font-size: 0.72rem;
   font-weight: 700;
@@ -827,6 +835,12 @@ select.inline-select { width: auto; min-width: 170px; padding: 0.4rem 0.6rem; fo
   color: var(--danger); font-weight: 700; font-size: 0.76rem;
   display: inline-flex; align-items: center; gap: 0.3rem;
 }
+.sla-badge {
+  font-weight: 700; font-size: 0.76rem;
+  display: inline-flex; align-items: center; gap: 0.3rem;
+}
+.sla-badge.violation { color: var(--warn); }
+.sla-badge.no-show { color: var(--muted); }
 
 .completed-toggle {
   display: flex; align-items: center; justify-content: space-between; width: 100%;

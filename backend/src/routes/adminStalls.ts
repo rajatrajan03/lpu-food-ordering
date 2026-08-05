@@ -49,6 +49,9 @@ const updateStallSchema = z.object({
   nightOpen: z.boolean().optional(),
   openingHours: z.record(z.string()).optional(),
   pickupNote: z.string().optional(),
+  // No-show grace period (minutes past the pickup slot's end) — configurable
+  // per stall; null/omitted falls back to orderService.DEFAULT_PICKUP_GRACE_MINUTES.
+  pickupGraceMinutes: z.number().int().min(0).max(60).nullable().optional(),
 });
 
 adminRouter.patch(

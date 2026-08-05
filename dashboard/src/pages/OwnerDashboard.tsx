@@ -4,15 +4,20 @@ import {
   Activity,
   AlertTriangle,
   BellRing,
+  CheckCircle2,
   ChevronDown,
   Clock3,
   Flame,
+  Hourglass,
   IndianRupee,
   ListChecks,
   Receipt,
+  ShieldAlert,
   Target,
   Timer,
   TrendingUp,
+  UserX,
+  XCircle,
 } from "lucide-react";
 import { api } from "../api/client";
 import {
@@ -50,6 +55,23 @@ interface Order {
   items: OrderItem[];
   pickupSlot: { startTime: string; endTime: string };
   student: { whatsappNumber: string; name: string | null };
+  // Order SLA & Accountability
+  acceptDeadline: string | null;
+  acceptedAt: string | null;
+  autoRejected: boolean;
+  readyAt: string | null;
+  slaViolation: boolean;
+  slaViolationMinutes: number | null;
+  noShow: boolean;
+}
+
+interface SlaMetrics {
+  totalOrders: number;
+  avgAcceptanceSeconds: number | null;
+  missedAcceptanceDeadlines: number;
+  slaViolations: number;
+  onTimePreparationRate: number | null;
+  customerNoShows: number;
 }
 
 /** Exact placed-at timestamp for staff-facing views (order cards, KOT) — students only ever see the order number, never this. */
@@ -64,6 +86,13 @@ function formatPlacedAt(iso: string): string {
     hour12: true,
     timeZone: "Asia/Kolkata",
   });
+}
+
+function formatAcceptanceTime(seconds: number | null): string {
+  if (seconds == null) return "—";
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
 const NEXT_ACTIONS: Record<Order["status"], { label: string; status: string; variant: string }[]> = {
@@ -88,6 +117,7 @@ export default function OwnerDashboard() {
   const [stallId, setStallId] = useState<string | null>(null);
   const [orders, setOrders] = useState<Order[] | null>(null);
   const [completedToday, setCompletedToday] = useState<Order[] | null>(null);
+  const [slaMetrics, setSlaMetrics] = useState<SlaMetrics | null>(null);
   const [showCompleted, setShowCompleted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actingOn, setActingOn] = useState<string | null>(null);
@@ -98,12 +128,14 @@ export default function OwnerDashboard() {
 
   const loadOrders = useCallback(async (id: string) => {
     try {
-      const [active, completed] = await Promise.all([
+      const [active, completed, sla] = await Promise.all([
         api<Order[]>(`/api/owner/stalls/${id}/orders`),
         api<Order[]>(`/api/owner/stalls/${id}/orders/completed-today`),
+        api<SlaMetrics>(`/api/owner/stalls/${id}/sla-metrics`),
       ]);
       setOrders(active.filter((o) => !pendingRejectIds.current.has(o.id)));
       setCompletedToday(completed);
+      setSlaMetrics(sla);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load orders.");
@@ -347,6 +379,46 @@ export default function OwnerDashboard() {
         />
       </div>
 
+      <div className="section-label">Order SLA &amp; Accountability</div>
+      <div className="stat-row">
+        <StatCard
+          icon={Hourglass}
+          label="Avg. acceptance time"
+          tone="info"
+          value={slaMetrics ? formatAcceptanceTime(slaMetrics.avgAcceptanceSeconds) : <Skeleton width={48} height={28} />}
+        />
+        <StatCard
+          icon={XCircle}
+          label="Missed acceptance deadlines"
+          tone={slaMetrics && slaMetrics.missedAcceptanceDeadlines > 0 ? "warn" : "accent"}
+          value={slaMetrics ? slaMetrics.missedAcceptanceDeadlines : <Skeleton width={32} height={28} />}
+        />
+        <StatCard
+          icon={ShieldAlert}
+          label="SLA violations"
+          tone={slaMetrics && slaMetrics.slaViolations > 0 ? "warn" : "accent"}
+          value={slaMetrics ? slaMetrics.slaViolations : <Skeleton width={32} height={28} />}
+        />
+        <StatCard
+          icon={CheckCircle2}
+          label="On-time preparation rate"
+          tone="success"
+          value={
+            slaMetrics
+              ? slaMetrics.onTimePreparationRate != null
+                ? `${slaMetrics.onTimePreparationRate}%`
+                : "—"
+              : <Skeleton width={48} height={28} />
+          }
+        />
+        <StatCard
+          icon={UserX}
+          label="Customer no-shows"
+          tone="accent"
+          value={slaMetrics ? slaMetrics.customerNoShows : <Skeleton width={32} height={28} />}
+        />
+      </div>
+
       <div className="owner-layout">
         <div className="owner-main">
           {orders === null && (
@@ -564,8 +636,14 @@ function OrderCard({
   onAct?: (orderId: string, status: string) => void;
   muted?: boolean;
 }) {
+  // Prefer the real accept deadline (exact SLA commitment) when present;
+  // older rows created before this field existed fall back to the old
+  // age-based approximation.
   const isUrgent =
-    order.status === "placed" && Date.now() - new Date(order.placedAt).getTime() > URGENT_MINUTES * 60_000;
+    order.status === "placed" &&
+    (order.acceptDeadline
+      ? Date.now() > new Date(order.acceptDeadline).getTime()
+      : Date.now() - new Date(order.placedAt).getTime() > URGENT_MINUTES * 60_000);
 
   return (
     <motion.div
@@ -585,6 +663,17 @@ function OrderCard({
           {isUrgent && (
             <span className="urgent-badge">
               <AlertTriangle size={12} strokeWidth={2.5} /> Waiting {relativeTime(order.placedAt)}
+            </span>
+          )}
+          {order.slaViolation && (
+            <span className="sla-badge violation" title="Marked ready after the pickup slot ended">
+              <ShieldAlert size={12} strokeWidth={2.5} />
+              SLA {order.slaViolationMinutes != null ? `+${order.slaViolationMinutes}m` : "violation"}
+            </span>
+          )}
+          {order.noShow && (
+            <span className="sla-badge no-show" title="Never collected within the pickup slot + grace period">
+              <UserX size={12} strokeWidth={2.5} /> No-show
             </span>
           )}
         </span>

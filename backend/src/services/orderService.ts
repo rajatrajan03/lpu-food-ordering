@@ -1,10 +1,15 @@
 import { randomInt } from "crypto";
 import { prisma } from "../lib/prisma";
-import { OrderStatus } from "@prisma/client";
+import { OrderStatus, Prisma } from "@prisma/client";
 import { sendWhatsAppText } from "../whatsapp/client";
 import { recomputeStudentPreferences } from "./preferenceService";
 
 export class OrderError extends Error {}
+
+// Order SLA & Accountability constants. Both are minutes, both fixed app-wide
+// except the pickup grace period, which a stall can override (see Stall.pickupGraceMinutes).
+export const ACCEPT_DEADLINE_MINUTES = 10;
+export const DEFAULT_PICKUP_GRACE_MINUTES = 10;
 
 // Customer-facing order number — random and unrelated to id/placedAt/count
 // on purpose, so it never reveals order sequence, daily volume, or timing.
@@ -121,6 +126,7 @@ export async function placeOrder(params: {
         pickupSlotId,
         totalAmount,
         displayId: generateDisplayId(),
+        acceptDeadline: new Date(Date.now() + ACCEPT_DEADLINE_MINUTES * 60_000),
         items: { create: orderItemsData },
       },
       include: { items: true, pickupSlot: true },
@@ -170,13 +176,21 @@ const ALLOWED_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   completed: [],
 };
 
+/**
+ * `opts.auto` marks a system-initiated auto-reject (unanswered past the
+ * accept deadline) — kept distinct from an owner's own reject so it's never
+ * counted against the owner. `opts.noShow` marks a system-initiated closure
+ * of a ready order nobody collected in time — also never counted against
+ * the owner.
+ */
 export async function transitionOrderStatus(
   orderId: string,
   stallId: string,
   nextStatus: OrderStatus,
+  opts: { auto?: boolean; noShow?: boolean } = {},
 ) {
   return prisma.$transaction(async (tx) => {
-    const order = await tx.order.findUnique({ where: { id: orderId } });
+    const order = await tx.order.findUnique({ where: { id: orderId }, include: { pickupSlot: true } });
     if (!order || order.stallId !== stallId) throw new OrderError("Order not found.");
     if (!ALLOWED_TRANSITIONS[order.status].includes(nextStatus)) {
       throw new OrderError(`Cannot move order from ${order.status} to ${nextStatus}.`);
@@ -187,13 +201,39 @@ export async function transitionOrderStatus(
         data: { bookedCount: { decrement: 1 } },
       });
     }
-    return tx.order.update({ where: { id: orderId }, data: { status: nextStatus } });
+
+    const now = new Date();
+    const data: Prisma.OrderUpdateInput = { status: nextStatus };
+    if (nextStatus === "accepted") {
+      data.acceptedAt = now;
+    }
+    if (nextStatus === "ready") {
+      data.readyAt = now;
+      // Owner's SLA commitment is "ready before the pickup slot ends" —
+      // flag it right here if that's already blown, no need to wait for
+      // the background sweep to catch it.
+      const slotEnd = slotEndInstant(order.pickupSlot.slotDate, order.pickupSlot.endTime);
+      if (now > slotEnd) {
+        data.slaViolation = true;
+        data.slaViolationMinutes = Math.ceil((now.getTime() - slotEnd.getTime()) / 60_000);
+      }
+    }
+    if (nextStatus === "rejected" && opts.auto) {
+      data.autoRejected = true;
+      data.cancelledReason = `Auto-rejected — stall did not respond within ${ACCEPT_DEADLINE_MINUTES} minutes.`;
+    }
+    if (nextStatus === "completed" && opts.noShow) {
+      data.noShow = true;
+      data.noShowAt = now;
+    }
+
+    return tx.order.update({ where: { id: orderId }, data });
   }).then((order) => {
     notifyStudentOfStatus(order);
     // Learned preferences (favorite stall/meal-period/usual order) are only
-    // ever built from orders that actually completed — a placed-then-rejected
-    // order shouldn't shape future suggestions.
-    if (order.status === "completed") {
+    // ever built from orders the student actually collected — a no-show
+    // shouldn't shape future "usual order" suggestions.
+    if (order.status === "completed" && !order.noShow) {
       recomputeStudentPreferences(order.studentId).catch((err) =>
         console.error("Failed to recompute student preferences:", err),
       );
@@ -209,7 +249,7 @@ export async function transitionOrderStatus(
 const POST_PICKUP_GRACE_MINUTES = 15;
 
 /** slotDate (DATE) and endTime (TIME) are stored separately — reassemble the actual instant the slot ends at. */
-function slotEndInstant(slotDate: Date, endTime: Date): Date {
+export function slotEndInstant(slotDate: Date, endTime: Date): Date {
   const d = new Date(slotDate);
   d.setUTCHours(endTime.getUTCHours(), endTime.getUTCMinutes(), endTime.getUTCSeconds(), 0);
   return d;
@@ -264,4 +304,56 @@ export async function getCompletedOrdersToday(stallId: string) {
     include: { items: true, pickupSlot: true, student: true },
     orderBy: { updatedAt: "desc" },
   });
+}
+
+/**
+ * Order SLA & Accountability stats for a stall's Owner Dashboard — defaults
+ * to today (UTC calendar day, matching how pickup slots are day-bucketed
+ * elsewhere), computed on the fly from the Order rows rather than a
+ * separate running-aggregate table, same approach as analyticsService.ts.
+ */
+export async function getSlaMetricsForStall(stallId: string, opts: { since?: Date } = {}) {
+  const since =
+    opts.since ??
+    (() => {
+      const now = new Date();
+      return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    })();
+
+  const orders = await prisma.order.findMany({
+    where: { stallId, placedAt: { gte: since } },
+    include: { pickupSlot: true },
+  });
+
+  const accepted = orders.filter((o) => o.acceptedAt);
+  const avgAcceptanceSeconds = accepted.length
+    ? Math.round(
+        accepted.reduce((sum, o) => sum + (o.acceptedAt!.getTime() - o.placedAt.getTime()), 0) /
+          accepted.length /
+          1000,
+      )
+    : null;
+
+  const missedAcceptanceDeadlines = orders.filter((o) => o.autoRejected).length;
+  const slaViolations = orders.filter((o) => o.slaViolation).length;
+
+  const readyOrders = orders.filter((o) => o.readyAt);
+  const onTimeReady = readyOrders.filter(
+    (o) => o.readyAt!.getTime() <= slotEndInstant(o.pickupSlot.slotDate, o.pickupSlot.endTime).getTime(),
+  );
+  const onTimePreparationRate = readyOrders.length
+    ? Math.round((onTimeReady.length / readyOrders.length) * 100)
+    : null;
+
+  const customerNoShows = orders.filter((o) => o.noShow).length;
+
+  return {
+    since: since.toISOString(),
+    totalOrders: orders.length,
+    avgAcceptanceSeconds,
+    missedAcceptanceDeadlines,
+    slaViolations,
+    onTimePreparationRate,
+    customerNoShows,
+  };
 }
