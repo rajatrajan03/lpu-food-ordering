@@ -179,11 +179,38 @@ export async function transitionOrderStatus(
   });
 }
 
+// How long an order stays "trackable" after its pickup window ends, before
+// it stops showing up in student-facing status checks even if the stall
+// never advanced its status — otherwise a stall that forgets to update an
+// order leaves it showing as "active" indefinitely, days later.
+const POST_PICKUP_GRACE_MINUTES = 15;
+
+/** slotDate (DATE) and endTime (TIME) are stored separately — reassemble the actual instant the slot ends at. */
+function slotEndInstant(slotDate: Date, endTime: Date): Date {
+  const d = new Date(slotDate);
+  d.setUTCHours(endTime.getUTCHours(), endTime.getUTCMinutes(), endTime.getUTCSeconds(), 0);
+  return d;
+}
+
+/**
+ * "Active" orders for student-facing status checks — excludes ones whose
+ * pickup window (plus a short grace period) has already passed, even if the
+ * stall never advanced their status past "placed". A day-level cutoff isn't
+ * enough here: a 2:30 PM slot should stop showing up well before midnight,
+ * not just once the calendar day changes.
+ */
 export async function getActiveOrdersForStudent(studentId: string) {
-  return prisma.order.findMany({
+  const orders = await prisma.order.findMany({
     where: { studentId, status: { notIn: ["completed", "cancelled", "rejected"] } },
     include: { items: true, pickupSlot: true, stall: true },
     orderBy: { placedAt: "desc" },
+  });
+  const now = new Date();
+  return orders.filter((o) => {
+    const expiresAt = new Date(
+      slotEndInstant(o.pickupSlot.slotDate, o.pickupSlot.endTime).getTime() + POST_PICKUP_GRACE_MINUTES * 60_000,
+    );
+    return expiresAt > now;
   });
 }
 
