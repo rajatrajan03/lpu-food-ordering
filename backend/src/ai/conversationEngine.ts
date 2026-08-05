@@ -53,7 +53,7 @@ Rules:
 - After calling get_pickup_slots, do NOT list out the slot times yourself — a tappable time picker is sent separately right after your reply. Just say something short like "Pick a pickup time below." and stop. Once the student replies with a time (typed or tapped), resolve it to a pickup_slot_id from Known references' "Pickup slots" map — do NOT call get_pickup_slots again just to re-look-up a time you already showed; only call it again if the student is starting a fresh checkout for a different stall/cart.
 - If the student sends something unrelated to picking a slot while one is pending (e.g. "remove it", changing an item), handle that request directly — removing/changing a cart item never requires re-fetching pickup slots.
 - Before calling place_order, show a one-line order summary (items, total, slot time) and wait for an explicit yes. Never call place_order on the same turn you first show the summary.
-- After place_order succeeds, confirm with the order id (short form), slot time, and total in one short line.
+- After place_order succeeds, reply with EXACTLY the tool result's \`summary\` field, unchanged — it's already correctly formatted with the order id, items, total, and pickup time in the right timezone. Do not reformat it, recompute the pickup time yourself, or add anything else.
 - If a search returns nothing, or an item/variant/slot turns out unavailable, don't just say "not available" — make ONE more tool call to find a close alternative (broader query, different stall, next open slot) before replying.
 - When the student names a specific pickup time, pass it as get_pickup_slots' preferred_time (24-hour HH:MM). If the nearest available slot is still far from what they asked (e.g. they said 6pm and the closest is 1pm), say plainly that nothing's available near that time and show what's closest instead — don't just dump the full day's slots as if that's what they asked for.
 - "My order history" / "my past orders" -> call get_order_history. "Repeat my last order" / "same as last time" -> call repeat_last_order directly (don't manually look up and re-add items one by one) — it fills the cart from their most recent order and tells you if anything from it is no longer available, which you should mention.
@@ -148,9 +148,18 @@ function knownReferencesText(session: SessionState): string {
   return parts.join("\n");
 }
 
-/** Formats a Prisma @db.Time value (returned as a Date on 1970-01-01) as "9:00 AM". */
+/**
+ * Formats a Prisma @db.Time value as "9:00 AM" in IST — must pin the
+ * timeZone explicitly since the production server runs in UTC, not IST,
+ * and would otherwise print the raw UTC clock time instead.
+ */
 function formatSlotTime(t: Date): string {
-  return new Date(t).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", hour12: true });
+  return new Date(t).toLocaleTimeString("en-IN", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: "Asia/Kolkata",
+  });
 }
 
 /** Populated by the get_pickup_slots case so the caller can follow up with a tappable list. */
@@ -453,22 +462,44 @@ async function executeTool(
         return { error: "The cart is empty." };
       }
       try {
+        const stallId = session.activeStallId;
         const order = await orderService.placeOrder({
           studentId,
-          stallId: session.activeStallId,
+          stallId,
           pickupSlotId: args.pickup_slot_id as string,
           lines: session.cart.map((l) => ({ menuItemId: l.itemId, variantId: l.variantId, quantity: l.quantity })),
         });
         session.cart = [];
         session.activeStallId = undefined;
-        return { order };
+
+        // Build the confirmation text here rather than leaving it to the
+        // model — it only ever sees raw UTC timestamps in the tool JSON and
+        // has no way to know the pickup slot is meant to be read in IST.
+        const stall = await prisma.stall.findUnique({ where: { id: stallId }, select: { name: true } });
+        const itemLines = order.items.map((i) => `${i.quantity}x ${i.itemNameSnapshot}`).join(", ");
+        const pickupTime = `${formatSlotTime(order.pickupSlot.startTime)} – ${formatSlotTime(order.pickupSlot.endTime)}`;
+        const summary = `✅ Order placed! #${order.id.slice(0, 6)} — ${stall?.name ?? "your stall"}\n${itemLines}\nTotal: ₹${Number(order.totalAmount)}\nPickup: ${pickupTime}`;
+        return { order, summary };
       } catch (err) {
         return { error: err instanceof orderService.OrderError ? err.message : "Could not place the order." };
       }
     }
 
-    case "get_order_status":
-      return { orders: await orderService.getActiveOrdersForStudent(studentId) };
+    case "get_order_status": {
+      const orders = await orderService.getActiveOrdersForStudent(studentId);
+      // Same reasoning as place_order — pre-format the pickup time here so
+      // the model never has to interpret a raw UTC timestamp itself.
+      return {
+        orders: orders.map((o) => ({
+          id: o.id,
+          status: o.status,
+          stall: o.stall.name,
+          items: o.items.map((i) => `${i.quantity}x ${i.itemNameSnapshot}`),
+          total: Number(o.totalAmount),
+          pickupTime: `${formatSlotTime(o.pickupSlot.startTime)} – ${formatSlotTime(o.pickupSlot.endTime)}`,
+        })),
+      };
+    }
 
     case "cancel_order":
       try {

@@ -155,28 +155,49 @@ export async function listStalls(
 }
 
 /**
- * Upcoming bookable slots for a stall, excluding full ones. Without a
- * preference, soonest first. With `preferredMinutes` (minutes since
- * midnight, e.g. 18*60 for 6 PM), sorted by closeness to that time of day
- * instead — so "around 6pm" surfaces nearby slots rather than the whole
- * day's list starting from whenever the stall opens.
+ * `slotDate` (DATE) and `startTime`/`endTime` (TIME) are stored separately,
+ * so the actual instant a slot happens at has to be reassembled from both —
+ * they were generated together as one absolute moment (see slotGenerator.ts)
+ * so combining their UTC components back gives that same instant.
+ */
+function combineSlotInstant(slotDate: Date, time: Date): Date {
+  const d = new Date(slotDate);
+  d.setUTCHours(time.getUTCHours(), time.getUTCMinutes(), time.getUTCSeconds(), 0);
+  return d;
+}
+
+/**
+ * Upcoming bookable slots for a stall, excluding full ones AND ones whose
+ * time has already passed today — slotDate alone is day-granularity, so a
+ * same-day filter has to compare the full reassembled instant against now,
+ * not just the calendar date. Without a preference, soonest-first already
+ * means "nearest to now" once past slots are excluded. With
+ * `preferredMinutes` (IST minutes since midnight, e.g. 18*60 for 6 PM),
+ * sorted by closeness to that IST time of day instead.
  */
 export async function getAvailablePickupSlots(
   stallId: string,
   options: { fromDate?: Date; preferredMinutes?: number } = {},
 ) {
   const { fromDate = new Date(), preferredMinutes } = options;
+  const dayStart = new Date(Date.UTC(fromDate.getUTCFullYear(), fromDate.getUTCMonth(), fromDate.getUTCDate()));
   const slots = await prisma.pickupSlot.findMany({
-    where: { stallId, slotDate: { gte: fromDate } },
+    where: { stallId, slotDate: { gte: dayStart } },
     orderBy: [{ slotDate: "asc" }, { startTime: "asc" }],
-    take: 50,
+    take: 80,
   });
-  const available = slots.filter((s) => s.bookedCount < s.maxCapacity);
+  const available = slots
+    .filter((s) => s.bookedCount < s.maxCapacity)
+    .filter((s) => combineSlotInstant(s.slotDate, s.startTime) > fromDate);
 
   if (preferredMinutes === undefined) return available.slice(0, 20);
 
-  const minutesOf = (t: Date) => t.getUTCHours() * 60 + t.getUTCMinutes();
+  const istMinutesOf = (instant: Date) => (instant.getUTCHours() * 60 + instant.getUTCMinutes() + 330) % 1440;
   return [...available]
-    .sort((a, b) => Math.abs(minutesOf(a.startTime) - preferredMinutes) - Math.abs(minutesOf(b.startTime) - preferredMinutes))
+    .sort((a, b) => {
+      const aMin = istMinutesOf(combineSlotInstant(a.slotDate, a.startTime));
+      const bMin = istMinutesOf(combineSlotInstant(b.slotDate, b.startTime));
+      return Math.abs(aMin - preferredMinutes) - Math.abs(bMin - preferredMinutes);
+    })
     .slice(0, 6);
 }
