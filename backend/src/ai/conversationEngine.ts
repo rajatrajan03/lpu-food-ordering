@@ -57,7 +57,7 @@ Rules:
 - If the student says "different", "something else", "other options", or similar after you've already shown a list, NEVER show the same items again — call search_menu again with the exact same query/stall_id/etc. plus the offset field set to how many items you already showed, so they see a new batch. If that comes back empty, say so plainly instead of repeating the old list.
 - A cart can only contain items from one stall. If the student wants a different stall mid-cart, tell them clearly they'll need to check out or clear the current cart first.
 - Always show prices when listing items or the cart.
-- After calling get_pickup_slots, do NOT list out the slot times yourself — a tappable time picker is sent separately right after your reply. Just say something short like "Pick a pickup time below." and stop. Once the student replies with a time (typed or tapped), resolve it to a pickup_slot_id from Known references' "Pickup slots" map — do NOT call get_pickup_slots again just to re-look-up a time you already showed; only call it again if the student is starting a fresh checkout for a different stall/cart.
+- After calling get_pickup_slots, your text reply is discarded and never sent — a tappable time picker with its own "Pick a pickup time" header goes out instead, so don't bother crafting a reply for this turn. Once the student replies with a time (typed or tapped), resolve it to a pickup_slot_id from Known references' "Pickup slots" map — do NOT call get_pickup_slots again just to re-look-up a time you already showed; only call it again if the student is starting a fresh checkout for a different stall/cart.
 - If the student sends something unrelated to picking a slot while one is pending (e.g. "remove it", changing an item), handle that request directly — removing/changing a cart item never requires re-fetching pickup slots.
 - Before calling place_order, show a one-line order summary (items, total, slot time) and wait for an explicit yes. Never call place_order on the same turn you first show the summary.
 - After place_order succeeds, reply with EXACTLY the tool result's \`summary\` field, unchanged — it's already correctly formatted with the order id, items, total, and pickup time in the right timezone. Do not reformat it, recompute the pickup time yourself, or add anything else.
@@ -173,6 +173,8 @@ function formatSlotTime(t: Date): string {
 /** Populated by the get_pickup_slots case so the caller can follow up with a tappable list. */
 interface ToolSideEffects {
   pickupSlotRows?: ListRow[];
+  /** Header text for the pickup-slot list — replaces a separate "pick a time" text reply entirely. */
+  pickupSlotHeader?: string;
   /** Set by place_order so the caller can follow up with Track/Cancel buttons for the new order. */
   placedOrderId?: string;
   /** Set by get_order_status when there's more than one active order, so the caller can follow up with a picker. */
@@ -466,6 +468,20 @@ async function executeTool(
       }));
       sideEffects.pickupSlotRows = labeled.map((s) => ({ id: s.id, title: s.time }));
       session.knownSlots = rememberNames(session.knownSlots, labeled.map((s) => [s.time, s.id]));
+
+      // The list's own header communicates everything needed — a separate
+      // "pick a time below" text reply is pure redundant clutter. Only fold
+      // in extra wording here (in the header itself) for the one case that's
+      // actually informative: the closest slot isn't really close to what
+      // they asked for.
+      sideEffects.pickupSlotHeader = "Pick a pickup time:";
+      if (preferredMinutes !== undefined && slots.length > 0) {
+        const closestIstMinutes = (slots[0].startTime.getUTCHours() * 60 + slots[0].startTime.getUTCMinutes() + 330) % 1440;
+        if (Math.abs(closestIstMinutes - preferredMinutes) > 60) {
+          sideEffects.pickupSlotHeader = `Nothing available near ${preferredTime} — here's the closest instead:`;
+        }
+      }
+
       return { slots: labeled };
     }
 
@@ -783,11 +799,26 @@ export async function handleIncomingMessage(
     data: { sessionState: session as unknown as object },
   });
 
-  // Follow the text reply with a tappable slot picker instead of making the
-  // student type back a number/time by hand.
+  const hasFollowUp = Boolean(
+    sideEffects.pickupSlotRows?.length || sideEffects.placedOrderId || sideEffects.orderStatusRows?.length,
+  );
+
   if (sideEffects.pickupSlotRows?.length) {
-    await sendWhatsAppList(whatsappNumber, "Pick a pickup time:", "Choose a slot", sideEffects.pickupSlotRows);
+    // The list's own header already says everything needed — no separate
+    // "pick a time" text reply for this turn, it would just be redundant.
+    await sendWhatsAppList(
+      whatsappNumber,
+      sideEffects.pickupSlotHeader ?? "Pick a pickup time:",
+      "Choose a slot",
+      sideEffects.pickupSlotRows,
+    );
+  } else if (hasFollowUp) {
+    // Order matters here: the confirmation/status text should read as the
+    // headline, with the follow-up buttons/list arriving after it — not
+    // the other way around, which reads like the buttons came out of nowhere.
+    await sendWhatsAppText(whatsappNumber, finalReply);
   }
+
   if (sideEffects.placedOrderId) {
     await sendPostOrderActions(whatsappNumber, sideEffects.placedOrderId);
   }
@@ -795,5 +826,5 @@ export async function handleIncomingMessage(
     await sendWhatsAppList(whatsappNumber, "You have multiple active orders — which one?", "Choose order", sideEffects.orderStatusRows);
   }
 
-  return finalReply;
+  return hasFollowUp ? null : finalReply;
 }
