@@ -6,10 +6,14 @@ import { asyncHandler } from "../lib/asyncHandler";
 import {
   getCompletedOrdersToday,
   getOrderQueueForStall,
+  getOrdersForDay,
   getSlaMetricsForStall,
+  istDayBounds,
   transitionOrderStatus,
   OrderError,
 } from "../services/orderService";
+
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 export const ownerOrdersRouter = Router();
 ownerOrdersRouter.use(requireAuth("stall_owner"));
@@ -50,7 +54,34 @@ ownerOrdersRouter.get(
     if (!(await assertOwnsStall(req.auth!.id, stallId))) {
       return res.status(403).json({ error: "You do not manage this stall." });
     }
-    res.json(await getSlaMetricsForStall(stallId));
+    const date = req.query.date;
+    if (date !== undefined && (typeof date !== "string" || !DATE_PATTERN.test(date))) {
+      return res.status(400).json({ error: "Invalid date — expected YYYY-MM-DD." });
+    }
+    const opts =
+      typeof date === "string"
+        ? (() => {
+            const { start, end } = istDayBounds(date);
+            return { since: start, until: end };
+          })()
+        : {};
+    res.json(await getSlaMetricsForStall(stallId, opts));
+  }),
+);
+
+/** Every order placed on a given past (or present) day, any status — powers the dashboard's date-picker history view. */
+ownerOrdersRouter.get(
+  "/stalls/:stallId/orders/history",
+  asyncHandler(async (req, res) => {
+    const { stallId } = req.params;
+    if (!(await assertOwnsStall(req.auth!.id, stallId))) {
+      return res.status(403).json({ error: "You do not manage this stall." });
+    }
+    const date = req.query.date;
+    if (typeof date !== "string" || !DATE_PATTERN.test(date)) {
+      return res.status(400).json({ error: "date is required, expected YYYY-MM-DD." });
+    }
+    res.json(await getOrdersForDay(stallId, date));
   }),
 );
 

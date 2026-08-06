@@ -328,13 +328,31 @@ export async function getCompletedOrdersToday(stallId: string) {
   });
 }
 
+/** Converts a "YYYY-MM-DD" (an IST calendar day, as picked from the dashboard's date input) to its UTC instant bounds. */
+export function istDayBounds(dateStr: string): { start: Date; end: Date } {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const start = new Date(Date.UTC(y, m - 1, d) - 330 * 60_000);
+  const end = new Date(start.getTime() + 24 * 60 * 60_000);
+  return { start, end };
+}
+
+/** Every order placed on a given (past or present) day, any status — powers the Owner Dashboard's date-picker history view. */
+export async function getOrdersForDay(stallId: string, dateStr: string) {
+  const { start, end } = istDayBounds(dateStr);
+  return prisma.order.findMany({
+    where: { stallId, placedAt: { gte: start, lt: end } },
+    include: { items: true, pickupSlot: true, student: true },
+    orderBy: { placedAt: "desc" },
+  });
+}
+
 /**
  * Order SLA & Accountability stats for a stall's Owner Dashboard — defaults
  * to today (UTC calendar day, matching how pickup slots are day-bucketed
  * elsewhere), computed on the fly from the Order rows rather than a
  * separate running-aggregate table, same approach as analyticsService.ts.
  */
-export async function getSlaMetricsForStall(stallId: string, opts: { since?: Date } = {}) {
+export async function getSlaMetricsForStall(stallId: string, opts: { since?: Date; until?: Date } = {}) {
   const since =
     opts.since ??
     (() => {
@@ -343,7 +361,7 @@ export async function getSlaMetricsForStall(stallId: string, opts: { since?: Dat
     })();
 
   const orders = await prisma.order.findMany({
-    where: { stallId, placedAt: { gte: since } },
+    where: { stallId, placedAt: { gte: since, ...(opts.until ? { lt: opts.until } : {}) } },
     include: { pickupSlot: true },
   });
 

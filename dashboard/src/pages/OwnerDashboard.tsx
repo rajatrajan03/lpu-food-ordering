@@ -95,6 +95,11 @@ function formatAcceptanceTime(seconds: number | null): string {
   return m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
+/** Today's date as "YYYY-MM-DD" in IST — matches the backend's date-picker query format. */
+function todayIstStr(): string {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+}
+
 const NEXT_ACTIONS: Record<Order["status"], { label: string; status: string; variant: string }[]> = {
   placed: [
     { label: "Accept", status: "accepted", variant: "secondary" },
@@ -121,6 +126,13 @@ export default function OwnerDashboard() {
   const [showCompleted, setShowCompleted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actingOn, setActingOn] = useState<string | null>(null);
+  // Date-picker history view — when this isn't today, the live queue/polling
+  // is replaced by a read-only snapshot of that day's orders.
+  const [selectedDate, setSelectedDate] = useState(todayIstStr());
+  const [historyOrders, setHistoryOrders] = useState<Order[] | null>(null);
+  const [historySla, setHistorySla] = useState<SlaMetrics | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const isToday = selectedDate === todayIstStr();
   const { show: showUndo, node: undoToastNode } = useUndoToast();
   // Orders rejected within the undo window — held out of poll results so they
   // don't reappear in the queue before the reject is actually committed.
@@ -151,12 +163,36 @@ export default function OwnerDashboard() {
       .catch((err) => setError(err.message));
   }, []);
 
+  const loadHistory = useCallback(async (id: string, date: string) => {
+    setHistoryLoading(true);
+    try {
+      const [dayOrders, sla] = await Promise.all([
+        api<Order[]>(`/api/owner/stalls/${id}/orders/history?date=${date}`),
+        api<SlaMetrics>(`/api/owner/stalls/${id}/sla-metrics?date=${date}`),
+      ]);
+      setHistoryOrders(dayOrders);
+      setHistorySla(sla);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load that day's orders.");
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  // Live queue + polling only while looking at today — a past date is a
+  // static snapshot, re-polling it every 10s would just repeat the same request.
   useEffect(() => {
-    if (!stallId) return;
+    if (!stallId || !isToday) return;
     loadOrders(stallId);
     const interval = setInterval(() => loadOrders(stallId), 10_000);
     return () => clearInterval(interval);
-  }, [stallId, loadOrders]);
+  }, [stallId, isToday, loadOrders]);
+
+  useEffect(() => {
+    if (!stallId || isToday) return;
+    loadHistory(stallId, selectedDate);
+  }, [stallId, isToday, selectedDate, loadHistory]);
 
   async function act(orderId: string, status: string) {
     if (!stallId || !orders) return;
@@ -303,6 +339,27 @@ export default function OwnerDashboard() {
       .slice(0, 6);
   }, [orders, completedToday]);
 
+  // Stats for the selected past date — every order for that day is already
+  // in a terminal state, so this is a straight reduce over historyOrders
+  // rather than the active+completed split the live view needs.
+  const historyCompleted = useMemo(() => historyOrders?.filter((o) => o.status === "completed") ?? [], [historyOrders]);
+  const historyRevenue = useMemo(
+    () => historyCompleted.reduce((sum, o) => sum + Number(o.totalAmount), 0),
+    [historyCompleted],
+  );
+  const historyAvgPrepMinutes = useMemo(() => {
+    if (historyCompleted.length === 0) return null;
+    const total = historyCompleted.reduce(
+      (sum, o) => sum + (new Date(o.updatedAt).getTime() - new Date(o.placedAt).getTime()),
+      0,
+    );
+    return Math.round(total / historyCompleted.length / 60_000);
+  }, [historyCompleted]);
+  const historyCompletionRate = useMemo(() => {
+    if (!historyOrders || historyOrders.length === 0) return null;
+    return Math.round((historyCompleted.length / historyOrders.length) * 100);
+  }, [historyOrders, historyCompleted]);
+
   return (
     <Shell navItems={NAV_ITEMS} activeKey="orders" onNavigate={() => {}} roleLabel="Stall Owner">
       {error && <div className="error-banner" role="alert">{error}</div>}
@@ -312,7 +369,7 @@ export default function OwnerDashboard() {
           <div className="row" style={{ gap: "0.9rem", alignItems: "flex-start" }}>
             <PageHead
               title={currentStall ? currentStall.name : "Orders"}
-              subtitle={currentStall ? `${currentStall.block} · live order queue` : undefined}
+              subtitle={currentStall ? `${currentStall.block} · ${isToday ? "live order queue" : `orders on ${selectedDate}`}` : undefined}
             />
             {currentStall && (
               <span
@@ -323,22 +380,38 @@ export default function OwnerDashboard() {
               </span>
             )}
           </div>
-          {stalls && stalls.length > 1 && (
-            <select
-              value={stallId ?? ""}
-              onChange={(e) => setStallId(e.target.value)}
-              style={{ width: "auto", minWidth: 200 }}
-            >
-              {stalls.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name} ({s.block})
-                </option>
-              ))}
-            </select>
-          )}
+          <div className="row" style={{ gap: "0.6rem" }}>
+            <input
+              type="date"
+              value={selectedDate}
+              max={todayIstStr()}
+              onChange={(e) => setSelectedDate(e.target.value || todayIstStr())}
+              style={{ width: "auto" }}
+              aria-label="View orders for date"
+            />
+            {!isToday && (
+              <button type="button" onClick={() => setSelectedDate(todayIstStr())}>
+                Today
+              </button>
+            )}
+            {stalls && stalls.length > 1 && (
+              <select
+                value={stallId ?? ""}
+                onChange={(e) => setStallId(e.target.value)}
+                style={{ width: "auto", minWidth: 200 }}
+              >
+                {stalls.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name} ({s.block})
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
         </div>
       </div>
 
+      {isToday ? (
       <div className="stat-row">
         <StatCard
           icon={Clock3}
@@ -576,6 +649,98 @@ export default function OwnerDashboard() {
           </div>
         </aside>
       </div>
+      ) : (
+      <>
+        <div className="stat-row">
+          <StatCard
+            icon={ListChecks}
+            label="Orders"
+            tone="accent"
+            value={historyOrders ? historyOrders.length : <Skeleton width={32} height={28} />}
+          />
+          <StatCard
+            icon={IndianRupee}
+            label="Revenue"
+            tone="success"
+            value={historyOrders ? <AnimatedNumber value={historyRevenue} prefix="₹" /> : <Skeleton width={48} height={28} />}
+          />
+          <StatCard
+            icon={CheckCircle2}
+            label="Completed"
+            tone="accent"
+            value={historyOrders ? historyCompleted.length : <Skeleton width={32} height={28} />}
+            sub={historyAvgPrepMinutes != null ? `~${historyAvgPrepMinutes}m avg` : undefined}
+          />
+          <StatCard
+            icon={Target}
+            label="Completion rate"
+            tone="success"
+            value={historyCompletionRate != null ? `${historyCompletionRate}%` : historyOrders ? "—" : <Skeleton width={48} height={28} />}
+          />
+        </div>
+
+        <div className="section-label">Order SLA &amp; Accountability</div>
+        <div className="stat-row">
+          <StatCard
+            icon={Hourglass}
+            label="Avg. acceptance time"
+            tone="info"
+            value={historySla ? formatAcceptanceTime(historySla.avgAcceptanceSeconds) : <Skeleton width={48} height={28} />}
+          />
+          <StatCard
+            icon={XCircle}
+            label="Missed acceptance deadlines"
+            tone={historySla && historySla.missedAcceptanceDeadlines > 0 ? "warn" : "accent"}
+            value={historySla ? historySla.missedAcceptanceDeadlines : <Skeleton width={32} height={28} />}
+          />
+          <StatCard
+            icon={ShieldAlert}
+            label="SLA violations"
+            tone={historySla && historySla.slaViolations > 0 ? "warn" : "accent"}
+            value={historySla ? historySla.slaViolations : <Skeleton width={32} height={28} />}
+          />
+          <StatCard
+            icon={CheckCircle2}
+            label="On-time preparation rate"
+            tone="success"
+            value={
+              historySla
+                ? historySla.onTimePreparationRate != null
+                  ? `${historySla.onTimePreparationRate}%`
+                  : "—"
+                : <Skeleton width={48} height={28} />
+            }
+          />
+          <StatCard
+            icon={UserX}
+            label="Customer no-shows"
+            tone="accent"
+            value={historySla ? historySla.customerNoShows : <Skeleton width={32} height={28} />}
+          />
+        </div>
+
+        <div className="owner-main">
+          {historyLoading && historyOrders === null && (
+            <div className="card stack">
+              <Skeleton height={20} />
+              <Skeleton height={20} width="70%" />
+            </div>
+          )}
+          {historyOrders !== null && historyOrders.length === 0 && (
+            <div className="card muted" style={{ textAlign: "center", padding: "2rem" }}>
+              No orders were placed on {selectedDate}.
+            </div>
+          )}
+          {historyOrders !== null && historyOrders.length > 0 && (
+            <div className="stack">
+              {historyOrders.map((order) => (
+                <OrderCard key={order.id} order={order} muted />
+              ))}
+            </div>
+          )}
+        </div>
+      </>
+      )}
 
       {undoToastNode}
     </Shell>
