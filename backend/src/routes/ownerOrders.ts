@@ -18,6 +18,7 @@ import * as offerService from "../services/offerService";
 import { askOwnerAssistant, BusinessAssistantError } from "../services/businessAssistantService";
 import { getOwnerAnalytics, resolveDateRange, toOwnerReport, AnalyticsError } from "../services/advancedAnalyticsService";
 import { reportToCsv, reportToXlsx, reportToPdf } from "../services/exportService";
+import { getOwnerForecast, ForecastError } from "../services/forecastService";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -338,6 +339,24 @@ ownerOrdersRouter.get(
       res.send(await reportToPdf(report));
     } catch (err) {
       if (err instanceof AnalyticsError) return res.status(400).json({ error: err.message });
+      throw err;
+    }
+  }),
+);
+
+// ---- AI Demand Forecasting ----
+
+ownerOrdersRouter.get(
+  "/stalls/:stallId/forecast",
+  asyncHandler(async (req, res) => {
+    const { stallId } = req.params;
+    if (!(await assertOwnsStall(req.auth!.id, stallId))) {
+      return res.status(403).json({ error: "You do not manage this stall." });
+    }
+    try {
+      res.json(await getOwnerForecast(stallId));
+    } catch (err) {
+      if (err instanceof ForecastError) return res.status(404).json({ error: err.message });
       throw err;
     }
   }),

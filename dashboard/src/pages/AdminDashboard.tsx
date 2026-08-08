@@ -6,6 +6,7 @@ import {
   BarChart3,
   Bot,
   CheckCircle2,
+  PackageSearch,
   Eye,
   EyeOff,
   IndianRupee,
@@ -19,6 +20,7 @@ import {
   Play,
   Receipt,
   Search,
+  Sparkles,
   Star,
   Store,
   Tag,
@@ -104,13 +106,14 @@ const NAV_ITEMS: NavItem[] = [
   { key: "stalls", label: "Stalls", icon: Store },
   { key: "offers", label: "Offers", icon: Tag },
   { key: "analytics", label: "Analytics", icon: BarChart3 },
+  { key: "forecast", label: "AI Forecast", icon: Sparkles },
   { key: "ai", label: "Ask AI", icon: Bot },
   { key: "categories", label: "Category review", icon: Tags },
   { key: "owners", label: "Assign owners", icon: KeyRound },
   { key: "students", label: "Students", icon: Users },
 ];
 
-type Tab = "overview" | "stalls" | "offers" | "analytics" | "ai" | "categories" | "owners" | "students";
+type Tab = "overview" | "stalls" | "offers" | "analytics" | "forecast" | "ai" | "categories" | "owners" | "students";
 type Period = "today" | "week" | "month" | "custom";
 
 const ADMIN_AI_SUGGESTIONS = [
@@ -277,6 +280,7 @@ export default function AdminDashboard() {
       {tab === "overview" && <OverviewTab overview={overview} activity={activity} rankings={rankings} onNavigate={setTab} />}
       {tab === "offers" && <AdminOffersTab />}
       {tab === "analytics" && <AdminAnalyticsTab />}
+      {tab === "forecast" && <AdminForecastTab />}
       {tab === "ai" && (
         <AskAiPanel
           title="Ask AI about campus operations"
@@ -369,6 +373,140 @@ function AdminExportButtons({ onExport }: { onExport: (format: "csv" | "xlsx" | 
       <button className="ghost small" onClick={() => onExport("xlsx")}>Export Excel</button>
       <button className="ghost small" onClick={() => onExport("pdf")}>Export PDF</button>
     </div>
+  );
+}
+
+interface AdminForecast {
+  sufficient: boolean;
+  reason?: string;
+  basedOnDays?: number;
+  targetWeekday?: string;
+  expectedCampusOrdersTomorrow?: number;
+  expectedCampusRevenueTomorrow?: number;
+  busiestBlocks?: { block: string; note?: string }[];
+  highestDemandStalls?: { name: string; note?: string }[];
+  expectedPeakHours?: { hourLabel: string; note?: string }[];
+  campusTrends?: string;
+  confidence?: "low" | "medium" | "high";
+  summary?: string;
+}
+
+function AdminForecastTab() {
+  const [forecast, setForecast] = useState<AdminForecast | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function load() {
+    setLoading(true);
+    setError(null);
+    try {
+      setForecast(await api<AdminForecast>("/api/admin/forecast"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not generate a forecast.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  return (
+    <>
+      <div className="page-hero">
+        <div className="page-hero-row">
+          <PageHead title="AI Forecast" subtitle="Tomorrow's campus-wide demand forecast, based on recent history." />
+          <button className="ghost small" onClick={load} disabled={loading}>{loading ? "Generating…" : "Regenerate"}</button>
+        </div>
+      </div>
+
+      {error && <div className="error-banner" role="alert">{error}</div>}
+
+      {loading && !forecast && (
+        <div className="card stack">
+          <Skeleton height={20} />
+          <Skeleton height={20} width="70%" />
+        </div>
+      )}
+
+      {forecast && !forecast.sufficient && (
+        <div className="card"><EmptyState icon={PackageSearch} text={forecast.reason ?? "Not enough campus-wide order history yet to generate a reliable forecast."} /></div>
+      )}
+
+      {forecast && forecast.sufficient && (
+        <>
+          <div className="card" style={{ marginBottom: "1rem" }}>
+            <div className="row between">
+              <span className="row" style={{ gap: "0.5rem" }}>
+                <Sparkles size={16} strokeWidth={2} color="var(--accent)" />
+                <strong>Campus forecast for {forecast.targetWeekday}</strong>
+              </span>
+              <span className={`pill ${forecast.confidence === "high" ? "active" : forecast.confidence === "low" ? "paused" : ""}`}>
+                {forecast.confidence} confidence
+              </span>
+            </div>
+            {forecast.summary && <div className="muted" style={{ marginTop: "0.5rem" }}>{forecast.summary}</div>}
+            <div className="muted" style={{ fontSize: "0.78rem", marginTop: "0.4rem" }}>Based on {forecast.basedOnDays} day(s) of order history.</div>
+          </div>
+
+          <div className="stat-row">
+            <StatCard icon={Receipt} label="Expected campus orders" tone="accent" value={forecast.expectedCampusOrdersTomorrow ?? "—"} />
+            <StatCard icon={IndianRupee} label="Expected campus revenue" tone="success" value={`₹${forecast.expectedCampusRevenueTomorrow ?? 0}`} />
+          </div>
+
+          <div className="overview-grid">
+            <div className="stack">
+              <div className="card">
+                <div className="card-title">Busiest blocks (expected)</div>
+                {!forecast.busiestBlocks?.length ? <div className="muted">No prediction available.</div> : (
+                  <div className="stack" style={{ marginTop: "0.4rem" }}>
+                    {forecast.busiestBlocks.map((b, i) => (
+                      <div key={i} className="row between" style={{ fontSize: "0.85rem" }}>
+                        <span>{b.block}</span>
+                        {b.note && <span className="muted">{b.note}</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="card">
+                <div className="card-title">Expected peak hours</div>
+                {!forecast.expectedPeakHours?.length ? <div className="muted">No prediction available.</div> : (
+                  <div className="stack" style={{ marginTop: "0.4rem" }}>
+                    {forecast.expectedPeakHours.map((h, i) => (
+                      <div key={i} className="row between" style={{ fontSize: "0.85rem" }}>
+                        <span>{h.hourLabel}</span>
+                        {h.note && <span className="muted">{h.note}</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="stack">
+              <div className="card">
+                <div className="card-title">Highest demand stalls (expected)</div>
+                {!forecast.highestDemandStalls?.length ? <div className="muted">No prediction available.</div> : (
+                  <div className="stack" style={{ marginTop: "0.4rem" }}>
+                    {forecast.highestDemandStalls.map((s, i) => (
+                      <div key={i} className="row between" style={{ fontSize: "0.85rem" }}>
+                        <span>{s.name}</span>
+                        {s.note && <span className="muted">{s.note}</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="card">
+                <div className="card-title">Campus trends</div>
+                <div style={{ marginTop: "0.4rem", fontSize: "0.85rem" }}>{forecast.campusTrends ?? "—"}</div>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+    </>
   );
 }
 

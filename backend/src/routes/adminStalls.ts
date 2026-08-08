@@ -11,6 +11,7 @@ import * as offerService from "../services/offerService";
 import { askAdminAssistant } from "../services/businessAssistantService";
 import { getAdminAnalytics, resolveDateRange, toAdminReport, AnalyticsError } from "../services/advancedAnalyticsService";
 import { reportToCsv, reportToXlsx, reportToPdf } from "../services/exportService";
+import { getAdminForecast } from "../services/forecastService";
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth("super_admin"));
@@ -122,6 +123,15 @@ adminRouter.get(
       if (err instanceof AnalyticsError) return res.status(400).json({ error: err.message });
       throw err;
     }
+  }),
+);
+
+// ---- AI Demand Forecasting (campus-wide) ----
+
+adminRouter.get(
+  "/forecast",
+  asyncHandler(async (_req, res) => {
+    res.json(await getAdminForecast());
   }),
 );
 

@@ -15,8 +15,10 @@ import {
   ListChecks,
   MessageSquareText,
   Plus,
+  PackageSearch,
   Receipt,
   ShieldAlert,
+  Sparkles,
   Star,
   Tag,
   Target,
@@ -145,6 +147,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: "orders", label: "Orders", icon: Receipt },
   { key: "offers", label: "Offers", icon: Tag },
   { key: "analytics", label: "Analytics", icon: BarChart3 },
+  { key: "forecast", label: "AI Forecast", icon: Sparkles },
   { key: "ai", label: "Ask AI", icon: Bot },
 ];
 
@@ -196,7 +199,7 @@ const OFFER_TYPE_LABEL: Record<string, string> = {
 };
 
 export default function OwnerDashboard() {
-  const [tab, setTab] = useState<"orders" | "offers" | "analytics" | "ai">("orders");
+  const [tab, setTab] = useState<"orders" | "offers" | "analytics" | "forecast" | "ai">("orders");
   const [stalls, setStalls] = useState<Stall[] | null>(null);
   const [stallId, setStallId] = useState<string | null>(null);
   const [orders, setOrders] = useState<Order[] | null>(null);
@@ -450,10 +453,12 @@ export default function OwnerDashboard() {
   }, [historyOrders, historyCompleted]);
 
   return (
-    <Shell navItems={NAV_ITEMS} activeKey={tab} onNavigate={(k) => setTab(k as "orders" | "offers" | "analytics" | "ai")} roleLabel="Stall Owner">
+    <Shell navItems={NAV_ITEMS} activeKey={tab} onNavigate={(k) => setTab(k as "orders" | "offers" | "analytics" | "forecast" | "ai")} roleLabel="Stall Owner">
       {error && <div className="error-banner" role="alert">{error}</div>}
 
-      {tab === "analytics" ? (
+      {tab === "forecast" ? (
+        <OwnerForecastTab stallId={stallId} stallName={currentStall?.name} />
+      ) : tab === "analytics" ? (
         <OwnerAnalyticsTab stallId={stallId} stallName={currentStall?.name} />
       ) : tab === "ai" ? (
         <AskAiPanel
@@ -1137,6 +1142,176 @@ function ExportButtons({ onExport }: { onExport: (format: "csv" | "xlsx" | "pdf"
       <button className="ghost small" onClick={() => onExport("xlsx")}>Export Excel</button>
       <button className="ghost small" onClick={() => onExport("pdf")}>Export PDF</button>
     </div>
+  );
+}
+
+interface OwnerForecast {
+  sufficient: boolean;
+  reason?: string;
+  generatedAt?: string;
+  basedOnDays?: number;
+  targetWeekday?: string;
+  expectedOrdersTomorrow?: number;
+  expectedRevenueTomorrow?: number;
+  expectedCustomerVolume?: number;
+  peakHours?: { hourLabel: string; note?: string }[];
+  expectedOfferPerformance?: string;
+  expectedSlaLoad?: string;
+  predictedBestSellers?: { name: string; expectedQty?: number }[];
+  predictedWorstSellers?: { name: string; expectedQty?: number }[];
+  suggestedPrepQuantities?: { item: string; qty: number }[];
+  recommendedStockIncrease?: { item: string; reason: string }[];
+  suggestedStaffing?: string;
+  likelyToSellOut?: string[];
+  overstocked?: string[];
+  recommendedOffersForTomorrow?: { name: string; reason: string }[];
+  confidence?: "low" | "medium" | "high";
+  summary?: string;
+}
+
+function OwnerForecastTab({ stallId, stallName }: { stallId: string | null; stallName: string | undefined }) {
+  const [forecast, setForecast] = useState<OwnerForecast | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function load() {
+    if (!stallId) return;
+    setLoading(true);
+    setError(null);
+    try {
+      setForecast(await api<OwnerForecast>(`/api/owner/stalls/${stallId}/forecast`));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not generate a forecast.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stallId]);
+
+  return (
+    <>
+      <div className="page-hero">
+        <div className="page-hero-row">
+          <PageHead title="AI Forecast" subtitle={stallName ? `Tomorrow's demand forecast for ${stallName}, based on recent history` : undefined} />
+          <button className="ghost small" onClick={load} disabled={loading}>{loading ? "Generating…" : "Regenerate"}</button>
+        </div>
+      </div>
+
+      {error && <div className="error-banner" role="alert">{error}</div>}
+
+      {loading && !forecast && (
+        <div className="card stack">
+          <Skeleton height={20} />
+          <Skeleton height={20} width="70%" />
+        </div>
+      )}
+
+      {forecast && !forecast.sufficient && (
+        <div className="card"><EmptyState icon={PackageSearch} text={forecast.reason ?? "Not enough order history yet to generate a reliable forecast."} /></div>
+      )}
+
+      {forecast && forecast.sufficient && (
+        <>
+          <div className="card" style={{ marginBottom: "1rem" }}>
+            <div className="row between">
+              <span className="row" style={{ gap: "0.5rem" }}>
+                <Sparkles size={16} strokeWidth={2} color="var(--accent)" />
+                <strong>Forecast for {forecast.targetWeekday}</strong>
+              </span>
+              <span className={`pill ${forecast.confidence === "high" ? "active" : forecast.confidence === "low" ? "paused" : ""}`}>
+                {forecast.confidence} confidence
+              </span>
+            </div>
+            {forecast.summary && <div className="muted" style={{ marginTop: "0.5rem" }}>{forecast.summary}</div>}
+            <div className="muted" style={{ fontSize: "0.78rem", marginTop: "0.4rem" }}>Based on {forecast.basedOnDays} day(s) of order history.</div>
+          </div>
+
+          <div className="stat-row">
+            <StatCard icon={Receipt} label="Expected orders" tone="accent" value={forecast.expectedOrdersTomorrow ?? "—"} />
+            <StatCard icon={IndianRupee} label="Expected revenue" tone="success" value={`₹${forecast.expectedRevenueTomorrow ?? 0}`} />
+            <StatCard icon={Users} label="Expected customers" tone="info" value={forecast.expectedCustomerVolume ?? "—"} />
+          </div>
+
+          <div className="overview-grid">
+            <div className="stack">
+              <div className="card">
+                <div className="card-title">Peak business hours</div>
+                {!forecast.peakHours?.length ? <div className="muted">No prediction available.</div> : (
+                  <div className="stack" style={{ marginTop: "0.4rem" }}>
+                    {forecast.peakHours.map((h, i) => (
+                      <div key={i} className="row between" style={{ fontSize: "0.85rem" }}>
+                        <span>{h.hourLabel}</span>
+                        {h.note && <span className="muted">{h.note}</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="card">
+                <div className="card-title">Predicted best sellers</div>
+                <BarChart data={forecast.predictedBestSellers?.map((i) => ({ label: i.name, value: i.expectedQty ?? 0 })) ?? []} />
+              </div>
+              <div className="card">
+                <div className="card-title">Predicted worst sellers</div>
+                <BarChart data={forecast.predictedWorstSellers?.map((i) => ({ label: i.name, value: i.expectedQty ?? 0 })) ?? []} />
+              </div>
+            </div>
+            <div className="stack">
+              <div className="card">
+                <div className="card-title">Suggested prep quantities</div>
+                {!forecast.suggestedPrepQuantities?.length ? <div className="muted">No prediction available.</div> : (
+                  <div className="stack" style={{ marginTop: "0.4rem" }}>
+                    {forecast.suggestedPrepQuantities.map((p, i) => (
+                      <div key={i} className="row between" style={{ fontSize: "0.85rem" }}>
+                        <span>{p.item}</span><span className="muted">{p.qty}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="card">
+                <div className="card-title">Staffing &amp; SLA load</div>
+                <div style={{ marginTop: "0.4rem", fontSize: "0.85rem" }}>{forecast.suggestedStaffing ?? "—"}</div>
+                {forecast.expectedSlaLoad && <div className="muted" style={{ marginTop: "0.4rem", fontSize: "0.85rem" }}>{forecast.expectedSlaLoad}</div>}
+              </div>
+              <div className="card">
+                <div className="card-title">Stock signals</div>
+                <div style={{ marginTop: "0.4rem" }}>
+                  <div className="muted" style={{ fontSize: "0.8rem" }}>Likely to sell out</div>
+                  <div style={{ fontSize: "0.85rem", marginBottom: "0.6rem" }}>{forecast.likelyToSellOut?.length ? forecast.likelyToSellOut.join(", ") : "None predicted"}</div>
+                  <div className="muted" style={{ fontSize: "0.8rem" }}>Overstocked risk</div>
+                  <div style={{ fontSize: "0.85rem", marginBottom: "0.6rem" }}>{forecast.overstocked?.length ? forecast.overstocked.join(", ") : "None predicted"}</div>
+                  {forecast.recommendedStockIncrease?.length ? (
+                    <>
+                      <div className="muted" style={{ fontSize: "0.8rem" }}>Recommended stock increase</div>
+                      {forecast.recommendedStockIncrease.map((s, i) => (
+                        <div key={i} style={{ fontSize: "0.85rem" }}>{s.item} — <span className="muted">{s.reason}</span></div>
+                      ))}
+                    </>
+                  ) : null}
+                </div>
+              </div>
+              <div className="card">
+                <div className="card-title">Recommended offers for tomorrow</div>
+                {!forecast.recommendedOffersForTomorrow?.length ? (
+                  <div className="muted">{forecast.expectedOfferPerformance ?? "No recommendation available."}</div>
+                ) : (
+                  <div className="stack" style={{ marginTop: "0.4rem" }}>
+                    {forecast.recommendedOffersForTomorrow.map((o, i) => (
+                      <div key={i} style={{ fontSize: "0.85rem" }}>{o.name} — <span className="muted">{o.reason}</span></div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+    </>
   );
 }
 
