@@ -7,4 +7,5 @@ build/
 .DS_Store
 dashboard/dist/
 backend/dist/
+backend/coverage/
 .claude/settings.local.json

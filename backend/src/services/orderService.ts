@@ -166,6 +166,8 @@ export async function placeOrder(params: {
             : Number(item.basePrice);
           return { menuItemId: item.id, categoryName: item.category?.rawLabel, unitPrice, quantity: line.quantity };
         }),
+        new Date(),
+        tx, // reuse this transaction's connection instead of opening a second one from the pool
       );
     } catch (err) {
       console.error("Failed to evaluate offers for order:", err);

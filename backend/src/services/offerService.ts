@@ -3,6 +3,9 @@ import { OfferType, Prisma } from "@prisma/client";
 
 export class OfferError extends Error {}
 
+/** Anything with the Prisma model delegates — either the module-level client or an active `tx` from prisma.$transaction. */
+type PrismaClientLike = typeof prisma | Prisma.TransactionClient;
+
 interface CartLineForOffer {
   menuItemId: string;
   categoryName?: string | null;
@@ -10,9 +13,18 @@ interface CartLineForOffer {
   quantity: number;
 }
 
-/** Offers currently within their valid window and marked active — the only ones eligible to be applied or shown to students. */
-export async function getActiveOffersForStall(stallId: string, at: Date = new Date()) {
-  return prisma.offer.findMany({
+/**
+ * Offers currently within their valid window and marked active — the only
+ * ones eligible to be applied or shown to students. Accepts an optional
+ * Prisma client so callers running inside their own `$transaction` (e.g.
+ * orderService.placeOrder) can pass `tx` and reuse that transaction's
+ * connection instead of opening a second one from the pool — under
+ * concurrent load, every nested connection here previously doubled the
+ * connections a single order placement needed, which exhausted the pool
+ * far faster than expected (caught by tests/load/loadTest.ts).
+ */
+export async function getActiveOffersForStall(stallId: string, at: Date = new Date(), client: PrismaClientLike = prisma) {
+  return client.offer.findMany({
     where: { stallId, active: true, validFrom: { lte: at }, validUntil: { gte: at } },
     orderBy: { createdAt: "desc" },
   });
@@ -118,9 +130,14 @@ export interface OfferApplication {
  * none apply. Never applies an expired/inactive offer — getActiveOffersForStall
  * already filters those out before anything here runs.
  */
-export async function computeBestOffer(stallId: string, lines: CartLineForOffer[], at: Date = new Date()): Promise<OfferApplication | null> {
+export async function computeBestOffer(
+  stallId: string,
+  lines: CartLineForOffer[],
+  at: Date = new Date(),
+  client: PrismaClientLike = prisma,
+): Promise<OfferApplication | null> {
   const cartTotal = lines.reduce((sum, l) => sum + l.unitPrice * l.quantity, 0);
-  const offers = await getActiveOffersForStall(stallId, at);
+  const offers = await getActiveOffersForStall(stallId, at, client);
 
   let best: OfferApplication | null = null;
   for (const offer of offers) {
@@ -162,7 +179,7 @@ export async function computeBestOffer(stallId: string, lines: CartLineForOffer[
       }
       case "free_item": {
         if (!offer.freeItemId) continue;
-        const freeItem = await prisma.menuItem.findUnique({ where: { id: offer.freeItemId } });
+        const freeItem = await client.menuItem.findUnique({ where: { id: offer.freeItemId } });
         if (!freeItem) continue;
         discount = Number(freeItem.basePrice);
         explanation = `Free ${freeItem.name}`;

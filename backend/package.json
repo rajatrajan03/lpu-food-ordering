@@ -11,6 +11,10 @@
     "create:admin": "tsx src/scripts/createSuperAdmin.ts",
     "test:chat": "tsx src/scripts/testChat.ts",
     "generate:slots": "tsx src/scripts/generateSlots.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:load": "tsx tests/load/loadTest.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio"
@@ -38,9 +42,13 @@
     "@types/express": "^4.17.21",
     "@types/jsonwebtoken": "^9.0.7",
     "@types/node": "^22.7.4",
+    "@types/supertest": "^7.2.1",
     "@types/uuid": "^10.0.0",
+    "@vitest/coverage-v8": "^4.1.10",
     "prisma": "^5.20.0",
+    "supertest": "^7.2.2",
     "tsx": "^4.19.1",
-    "typescript": "^5.6.2"
+    "typescript": "^5.6.2",
+    "vitest": "^4.1.10"
   }
 }
