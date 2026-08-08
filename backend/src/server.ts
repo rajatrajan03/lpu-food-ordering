@@ -26,6 +26,12 @@ process.on("unhandledRejection", (err) => logger.error("process.unhandled_reject
 process.on("uncaughtException", (err) => logger.error("process.uncaught_exception", { error: err instanceof Error ? err.message : String(err) }));
 
 const app = express();
+// Render sits in front of the app behind a single reverse-proxy hop — without
+// this, express-rate-limit sees Render's X-Forwarded-For header and (by
+// design, as a misconfiguration guard) throws on every request instead of
+// silently trusting a spoofable header. `1` means "trust exactly one hop",
+// which also makes req.ip resolve to the real client IP instead of Render's.
+app.set("trust proxy", 1);
 app.use(cors());
 // `verify` captures the exact raw bytes Meta sent, before JSON parsing —
 // the webhook signature check (routes/webhook.ts) needs to hash those exact
