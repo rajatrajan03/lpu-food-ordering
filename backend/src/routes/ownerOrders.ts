@@ -15,6 +15,7 @@ import {
 import { triggerRatingPrompt } from "../ai/ratingFlow";
 import * as ratingService from "../services/ratingService";
 import * as offerService from "../services/offerService";
+import { askOwnerAssistant, BusinessAssistantError } from "../services/businessAssistantService";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -276,6 +277,29 @@ ownerOrdersRouter.post(
       res.json(offer);
     } catch (err) {
       if (err instanceof offerService.OfferError) return res.status(404).json({ error: err.message });
+      throw err;
+    }
+  }),
+);
+
+// ---- AI Business Assistant (owner-scoped — only ever sees this stall's own data) ----
+
+const aiQuestionSchema = z.object({ question: z.string().min(1).max(500) });
+
+ownerOrdersRouter.post(
+  "/stalls/:stallId/ai-assistant",
+  asyncHandler(async (req, res) => {
+    const { stallId } = req.params;
+    if (!(await assertOwnsStall(req.auth!.id, stallId))) {
+      return res.status(403).json({ error: "You do not manage this stall." });
+    }
+    const parsed = aiQuestionSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: "A question is required." });
+    try {
+      const answer = await askOwnerAssistant(stallId, parsed.data.question);
+      res.json({ answer });
+    } catch (err) {
+      if (err instanceof BusinessAssistantError) return res.status(404).json({ error: err.message });
       throw err;
     }
   }),

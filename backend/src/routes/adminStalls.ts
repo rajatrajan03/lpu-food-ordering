@@ -8,6 +8,7 @@ import { getOverview, getRecentActivity, getStallInsights } from "../services/an
 import { listStudents, countStudents } from "../services/studentService";
 import * as ratingService from "../services/ratingService";
 import * as offerService from "../services/offerService";
+import { askAdminAssistant } from "../services/businessAssistantService";
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth("super_admin"));
@@ -69,6 +70,18 @@ adminRouter.post(
   asyncHandler(async (req, res) => {
     const offer = await offerService.adminSetOfferActive(req.params.offerId, req.params.action === "activate");
     res.json(offer);
+  }),
+);
+
+// ---- AI Business Assistant (campus-wide aggregate data only) ----
+
+adminRouter.post(
+  "/ai-assistant",
+  asyncHandler(async (req, res) => {
+    const parsed = z.object({ question: z.string().min(1).max(500) }).safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: "A question is required." });
+    const answer = await askAdminAssistant(parsed.data.question);
+    res.json({ answer });
   }),
 );
 

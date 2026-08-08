@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   Activity,
   AlertTriangle,
+  Bot,
   CheckCircle2,
   Eye,
   EyeOff,
@@ -101,12 +102,22 @@ const NAV_ITEMS: NavItem[] = [
   { key: "overview", label: "Overview", icon: LayoutGrid },
   { key: "stalls", label: "Stalls", icon: Store },
   { key: "offers", label: "Offers", icon: Tag },
+  { key: "ai", label: "Ask AI", icon: Bot },
   { key: "categories", label: "Category review", icon: Tags },
   { key: "owners", label: "Assign owners", icon: KeyRound },
   { key: "students", label: "Students", icon: Users },
 ];
 
-type Tab = "overview" | "stalls" | "offers" | "categories" | "owners" | "students";
+type Tab = "overview" | "stalls" | "offers" | "ai" | "categories" | "owners" | "students";
+
+const ADMIN_AI_SUGGESTIONS = [
+  "Which stall has the highest ratings?",
+  "Which stall has the worst SLA performance?",
+  "Which stalls need attention?",
+  "Show today's busiest stalls.",
+  "Which offers generated the most orders?",
+  "Show campus food trends.",
+];
 
 interface AdminOffer {
   id: string;
@@ -262,6 +273,14 @@ export default function AdminDashboard() {
 
       {tab === "overview" && <OverviewTab overview={overview} activity={activity} rankings={rankings} onNavigate={setTab} />}
       {tab === "offers" && <AdminOffersTab />}
+      {tab === "ai" && (
+        <AskAiPanel
+          title="Ask AI about campus operations"
+          subtitle="Answers use campus-wide aggregate data only — never individual student information."
+          suggestions={ADMIN_AI_SUGGESTIONS}
+          ask={(question) => api<{ answer: string }>("/api/admin/ai-assistant", { method: "POST", body: { question } })}
+        />
+      )}
       {tab === "stalls" && (
         <StallsTab
           stalls={stalls}
@@ -281,6 +300,90 @@ export default function AdminDashboard() {
       {tab === "owners" && <AssignOwnerForm stalls={stalls ?? []} onAssigned={refreshAll} />}
       {tab === "students" && <StudentsTab students={students} total={studentTotal} />}
     </Shell>
+  );
+}
+
+function AskAiPanel({
+  title,
+  subtitle,
+  suggestions,
+  ask,
+}: {
+  title: string;
+  subtitle?: string;
+  suggestions: string[];
+  ask: (question: string) => Promise<{ answer: string }>;
+}) {
+  const [question, setQuestion] = useState("");
+  const [messages, setMessages] = useState<{ question: string; answer: string }[]>([]);
+  const [asking, setAsking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(q: string) {
+    const trimmed = q.trim();
+    if (!trimmed || asking) return;
+    setAsking(true);
+    setError(null);
+    setQuestion("");
+    try {
+      const { answer } = await ask(trimmed);
+      setMessages((prev) => [...prev, { question: trimmed, answer }]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not get an answer — please try again.");
+    } finally {
+      setAsking(false);
+    }
+  }
+
+  return (
+    <>
+      <PageHead title={title} subtitle={subtitle} />
+
+      <div className="card" style={{ marginBottom: "1rem" }}>
+        <div className="row" style={{ gap: "0.5rem", flexWrap: "wrap" }}>
+          {suggestions.map((s) => (
+            <button key={s} className="ghost small" disabled={asking} onClick={() => submit(s)}>
+              {s}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {error && <div className="error-banner" role="alert">{error}</div>}
+
+      <div className="stack" style={{ marginBottom: "1rem" }}>
+        {messages.map((m, i) => (
+          <div key={i} className="card">
+            <div style={{ fontWeight: 600 }}>{m.question}</div>
+            <div className="muted" style={{ marginTop: "0.5rem", whiteSpace: "pre-wrap", lineHeight: 1.5 }}>
+              {m.answer}
+            </div>
+          </div>
+        ))}
+        {asking && (
+          <div className="card muted">
+            <span className="spinner" /> Thinking…
+          </div>
+        )}
+        {messages.length === 0 && !asking && (
+          <div className="card"><EmptyState icon={Bot} text="Ask a question above to get started." /></div>
+        )}
+      </div>
+
+      <div className="row" style={{ gap: "0.6rem" }}>
+        <input
+          value={question}
+          onChange={(e) => setQuestion(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && submit(question)}
+          placeholder="Ask a business question…"
+          disabled={asking}
+          style={{ flex: 1 }}
+        />
+        <button className="primary" onClick={() => submit(question)} disabled={asking || !question.trim()}>
+          Ask
+        </button>
+      </div>
+    </>
   );
 }
 
