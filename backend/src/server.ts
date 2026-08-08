@@ -1,25 +1,70 @@
 import "dotenv/config";
+import { randomUUID } from "crypto";
 import express from "express";
 import cors from "cors";
 import type { NextFunction, Request, Response } from "express";
+import { validateEnv } from "./lib/env";
+import { logger } from "./lib/logger";
+import { apiLimiter } from "./lib/rateLimit";
+import { prisma } from "./lib/prisma";
 import { webhookRouter } from "./routes/webhook";
 import { authRouter } from "./routes/auth";
 import { ownerOrdersRouter } from "./routes/ownerOrders";
 import { adminRouter } from "./routes/adminStalls";
 import { startSlaMonitor } from "./services/slaMonitor";
 
+// Fail fast on a broken production config (missing DB, insecure JWT secret
+// still set in production) rather than serving requests that will 500 or
+// sign forgeable tokens. See lib/env.ts for exactly what's checked.
+validateEnv();
+
 // Last-resort safety net: a bug or a transient failure (e.g. a momentary DB
 // blip) anywhere we didn't anticipate should never take the whole process
 // down. Route-level errors are already caught by asyncHandler; this only
 // catches what slips past that (e.g. errors outside a request context).
-process.on("unhandledRejection", (err) => console.error("Unhandled rejection:", err));
-process.on("uncaughtException", (err) => console.error("Uncaught exception:", err));
+process.on("unhandledRejection", (err) => logger.error("process.unhandled_rejection", { error: err instanceof Error ? err.message : String(err) }));
+process.on("uncaughtException", (err) => logger.error("process.uncaught_exception", { error: err instanceof Error ? err.message : String(err) }));
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+// `verify` captures the exact raw bytes Meta sent, before JSON parsing —
+// the webhook signature check (routes/webhook.ts) needs to hash those exact
+// bytes, not a re-serialized copy that could differ byte-for-byte.
+app.use(
+  express.json({
+    verify: (req, _res, buf) => {
+      (req as Request & { rawBody?: Buffer }).rawBody = Buffer.from(buf);
+    },
+  }),
+);
 
-app.get("/health", (_req, res) => res.json({ status: "ok" }));
+// A per-request id, echoed back in the response header and included in every
+// structured log line for that request — makes it possible to correlate a
+// user-reported error with the exact server-side log entries.
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const requestId = req.header("x-request-id") ?? randomUUID();
+  req.requestId = requestId;
+  res.setHeader("X-Request-Id", requestId);
+  next();
+});
+
+declare module "express-serve-static-core" {
+  interface Request {
+    requestId?: string;
+    rawBody?: Buffer;
+  }
+}
+
+app.get("/health", async (_req, res) => {
+  const startedAt = Date.now();
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    res.json({ status: "ok", db: "connected", uptimeSeconds: Math.round(process.uptime()), latencyMs: Date.now() - startedAt });
+  } catch (err) {
+    logger.error("health.db_unreachable", { error: err instanceof Error ? err.message : String(err) });
+    res.status(503).json({ status: "degraded", db: "unreachable" });
+  }
+});
 
 // Required by Meta before the app can be published — see PRIVACY_POLICY.md
 // for the source content. Served as static HTML so it doesn't need its own
@@ -46,20 +91,63 @@ h1{font-size:1.4rem}h2{font-size:1.05rem;margin-top:1.5rem}</style></head>
 
 app.use("/webhook/whatsapp", webhookRouter);
 app.use("/api/auth", authRouter);
+app.use("/api", apiLimiter);
 app.use("/api/owner", ownerOrdersRouter);
 app.use("/api/admin", adminRouter);
 
 // Catches anything forwarded via next(err) — including every asyncHandler
 // rejection — and responds with 500 instead of letting Express's default
 // handler leak stack traces or, worse, leaving the request hanging.
-app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-  console.error("Request error:", err);
+// Deliberately never forwards err.message to the client here: known,
+// intentional error classes (OrderError, OfferError, RatingError, etc.)
+// already send their own friendly message earlier in each route and never
+// reach this handler — anything that does reach here is unexpected, so the
+// safe default is a generic message, with the real detail only in the log.
+app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
+  logger.error("request.unhandled_error", {
+    requestId: req.requestId,
+    path: req.path,
+    method: req.method,
+    error: err instanceof Error ? err.message : String(err),
+  });
   if (!res.headersSent) res.status(500).json({ error: "Something went wrong. Please try again." });
 });
 
 const port = Number(process.env.PORT) || 3000;
-app.listen(port, () => console.log(`Backend listening on port ${port}`));
+app.listen(port, () => logger.info("server.started", { port, nodeEnv: process.env.NODE_ENV ?? "development" }));
 
 // Order SLA & Accountability sweep — auto-reject/SLA-violation/no-show
 // checks, running every minute in-process (see services/slaMonitor.ts).
 startSlaMonitor();
+
+// Best-effort, non-blocking visibility into the WhatsApp access token's
+// type/expiry at boot — a short-lived USER token (Meta's test-app default)
+// silently breaks the bot every 1-2 hours; a permanent System User token
+// (see HANDOFF.md §3) has no expires_at. This never blocks startup or
+// throws — it's purely a log line for whoever's watching Render's logs.
+if (process.env.WHATSAPP_ACCESS_TOKEN) {
+  fetch(
+    `https://graph.facebook.com/v21.0/debug_token?input_token=${process.env.WHATSAPP_ACCESS_TOKEN}&access_token=${process.env.WHATSAPP_ACCESS_TOKEN}`,
+  )
+    .then((r) => r.json() as Promise<{ data?: { type?: string; is_valid?: boolean; expires_at?: number } }>)
+    .then((data) => {
+      const info = data?.data;
+      if (!info) return;
+      const expiresAt = info.expires_at;
+      const isPermanent = !expiresAt || expiresAt === 0;
+      logger.info("whatsapp.token_status", {
+        type: info.type,
+        isValid: info.is_valid,
+        isPermanent,
+        expiresAt: isPermanent || !expiresAt ? null : new Date(expiresAt * 1000).toISOString(),
+      });
+      if (!isPermanent) {
+        logger.warn("whatsapp.token_not_permanent", {
+          note: "Using a short-lived token — see HANDOFF.md §3 for how to generate a permanent System User token.",
+        });
+      }
+    })
+    .catch(() => {
+      /* best-effort only — never block or fail startup over this */
+    });
+}

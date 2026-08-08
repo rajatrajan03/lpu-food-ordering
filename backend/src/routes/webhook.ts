@@ -1,8 +1,48 @@
+import { timingSafeEqual, createHmac } from "crypto";
 import { Router } from "express";
 import { sendWhatsAppText } from "../whatsapp/client";
 import { handleIncomingMessage } from "../ai/conversationEngine";
+import { webhookLimiter } from "../lib/rateLimit";
+import { logger } from "../lib/logger";
 
 export const webhookRouter = Router();
+
+let warnedNoAppSecret = false;
+
+/**
+ * Verifies Meta's X-Hub-Signature-256 header against the raw request body.
+ * Requires WHATSAPP_APP_SECRET to be set (server.ts captures req.rawBody via
+ * express.json's `verify` option so this can hash the exact bytes Meta signed,
+ * not a re-serialized copy that could differ byte-for-byte).
+ *
+ * Backward-compatible on purpose: if WHATSAPP_APP_SECRET isn't configured yet
+ * (it isn't, as of this change, on the current Render deployment), this logs
+ * a one-time warning and lets the request through rather than breaking the
+ * live webhook — set the env var to actually enforce verification.
+ */
+function isValidSignature(req: import("express").Request): boolean {
+  const appSecret = process.env.WHATSAPP_APP_SECRET;
+  if (!appSecret) {
+    if (!warnedNoAppSecret) {
+      logger.warn("webhook.signature_verification_disabled", {
+        note: "WHATSAPP_APP_SECRET is not set — signature verification is skipped. Set it in the environment to enforce.",
+      });
+      warnedNoAppSecret = true;
+    }
+    return true;
+  }
+
+  const header = req.header("x-hub-signature-256");
+  const rawBody = (req as import("express").Request & { rawBody?: Buffer }).rawBody;
+  if (!header || !rawBody) return false;
+
+  const expected = `sha256=${createHmac("sha256", appSecret).update(rawBody).digest("hex")}`;
+  const expectedBuf = Buffer.from(expected);
+  const givenBuf = Buffer.from(header);
+  // Lengths must match before timingSafeEqual (it throws on mismatched
+  // buffer lengths rather than returning false).
+  return expectedBuf.length === givenBuf.length && timingSafeEqual(expectedBuf, givenBuf);
+}
 
 // Meta can (and does) deliver two messages from the same number close enough
 // together that their handleIncomingMessage calls overlap — both read the
@@ -43,7 +83,11 @@ webhookRouter.get("/", (req, res) => {
 // Meta calls this for every inbound message/status update.
 // Must return 200 quickly — Meta retries (and eventually disables the webhook)
 // on repeated slow/failed responses, so we ack first and reply asynchronously.
-webhookRouter.post("/", (req, res) => {
+webhookRouter.post("/", webhookLimiter, (req, res) => {
+  if (!isValidSignature(req)) {
+    logger.warn("webhook.invalid_signature", { ip: req.ip });
+    return res.sendStatus(401);
+  }
   res.sendStatus(200);
   console.log("Webhook POST received:", JSON.stringify(req.body).slice(0, 500));
 

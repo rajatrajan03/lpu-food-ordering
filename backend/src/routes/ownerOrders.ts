@@ -19,6 +19,7 @@ import { askOwnerAssistant, BusinessAssistantError } from "../services/businessA
 import { getOwnerAnalytics, resolveDateRange, toOwnerReport, AnalyticsError } from "../services/advancedAnalyticsService";
 import { reportToCsv, reportToXlsx, reportToPdf } from "../services/exportService";
 import { getOwnerForecast, ForecastError } from "../services/forecastService";
+import { auditLog } from "../lib/logger";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -144,6 +145,7 @@ ownerOrdersRouter.post(
       return res.status(403).json({ error: "You do not manage this stall." });
     }
     const stall = await prisma.stall.update({ where: { id: stallId }, data: { status: "paused" } });
+    auditLog("owner.stall_paused", { ownerId: req.auth!.id, stallId });
     res.json(stall);
   }),
 );
@@ -156,6 +158,7 @@ ownerOrdersRouter.post(
       return res.status(403).json({ error: "You do not manage this stall." });
     }
     const stall = await prisma.stall.update({ where: { id: stallId }, data: { status: "active" } });
+    auditLog("owner.stall_resumed", { ownerId: req.auth!.id, stallId });
     res.json(stall);
   }),
 );
@@ -224,6 +227,7 @@ ownerOrdersRouter.post(
     if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
     try {
       const offer = await offerService.createOffer(stallId, parsed.data);
+      auditLog("owner.offer_created", { ownerId: req.auth!.id, stallId, offerId: offer.id });
       res.status(201).json(offer);
     } catch (err) {
       if (err instanceof offerService.OfferError) return res.status(400).json({ error: err.message });
@@ -243,6 +247,7 @@ ownerOrdersRouter.patch(
     if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
     try {
       const offer = await offerService.updateOffer(offerId, stallId, parsed.data);
+      auditLog("owner.offer_updated", { ownerId: req.auth!.id, stallId, offerId });
       res.json(offer);
     } catch (err) {
       if (err instanceof offerService.OfferError) return res.status(404).json({ error: err.message });
@@ -260,6 +265,7 @@ ownerOrdersRouter.delete(
     }
     try {
       await offerService.deleteOffer(offerId, stallId);
+      auditLog("owner.offer_deleted", { ownerId: req.auth!.id, stallId, offerId });
       res.status(204).end();
     } catch (err) {
       if (err instanceof offerService.OfferError) return res.status(404).json({ error: err.message });
@@ -277,6 +283,7 @@ ownerOrdersRouter.post(
     }
     try {
       const offer = await offerService.setOfferActive(offerId, stallId, action === "activate");
+      auditLog("owner.offer_status_changed", { ownerId: req.auth!.id, stallId, offerId, action });
       res.json(offer);
     } catch (err) {
       if (err instanceof offerService.OfferError) return res.status(404).json({ error: err.message });

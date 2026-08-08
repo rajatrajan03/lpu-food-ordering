@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, animate, motion, useMotionValue, useTransform } from "framer-motion";
 import { CornerDownLeft, LogOut, Menu, Moon, Search, Sun, Undo2, UtensilsCrossed, X } from "lucide-react";
-import { clearAuth, getAuth } from "../api/client";
+import { api, clearAuth, getAuth } from "../api/client";
 
 export interface NavItem {
   key: string;
@@ -32,6 +32,10 @@ export function Shell({
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   function logout() {
+    // Best-effort server-side revocation — clear local auth and navigate
+    // away regardless of whether this succeeds, so a network blip never
+    // traps the user on the dashboard.
+    api("/api/auth/logout", { method: "POST" }).catch(() => {});
     clearAuth();
     navigate("/");
   }

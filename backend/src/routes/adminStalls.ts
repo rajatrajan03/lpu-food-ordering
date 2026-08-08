@@ -12,6 +12,7 @@ import { askAdminAssistant } from "../services/businessAssistantService";
 import { getAdminAnalytics, resolveDateRange, toAdminReport, AnalyticsError } from "../services/advancedAnalyticsService";
 import { reportToCsv, reportToXlsx, reportToPdf } from "../services/exportService";
 import { getAdminForecast } from "../services/forecastService";
+import { auditLog } from "../lib/logger";
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth("super_admin"));
@@ -72,6 +73,7 @@ adminRouter.post(
   "/offers/:offerId/:action(activate|deactivate)",
   asyncHandler(async (req, res) => {
     const offer = await offerService.adminSetOfferActive(req.params.offerId, req.params.action === "activate");
+    auditLog("admin.offer_status_changed", { adminId: req.auth!.id, offerId: offer.id, action: req.params.action });
     res.json(offer);
   }),
 );
@@ -173,6 +175,7 @@ adminRouter.patch(
     const parsed = updateStallSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
     const stall = await prisma.stall.update({ where: { id: req.params.stallId }, data: parsed.data });
+    auditLog("admin.stall_updated", { adminId: req.auth!.id, stallId: stall.id, changes: parsed.data });
     res.json(stall);
   }),
 );
@@ -194,6 +197,7 @@ adminRouter.post(
       where: stallIds ? { id: { in: stallIds } } : {},
       data: { status },
     });
+    auditLog("admin.stalls_bulk_status_changed", { adminId: req.auth!.id, status, stallIds: stallIds ?? "all", updated: result.count });
     res.json({ updated: result.count });
   }),
 );
@@ -226,6 +230,7 @@ adminRouter.post(
       },
       include: { stalls: true },
     });
+    auditLog("admin.owner_created", { adminId: req.auth!.id, ownerId: owner.id, stallIds });
     res.status(201).json(owner);
   }),
 );
@@ -305,6 +310,7 @@ adminRouter.patch(
     const parsed = updateItemSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
     const item = await prisma.menuItem.update({ where: { id: req.params.itemId }, data: parsed.data });
+    auditLog("admin.menu_item_updated", { adminId: req.auth!.id, itemId: item.id, changes: parsed.data });
     res.json(item);
   }),
 );
