@@ -7,6 +7,7 @@ import { asyncHandler } from "../lib/asyncHandler";
 import { getOverview, getRecentActivity, getStallInsights } from "../services/analyticsService";
 import { listStudents, countStudents } from "../services/studentService";
 import * as ratingService from "../services/ratingService";
+import * as offerService from "../services/offerService";
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth("super_admin"));
@@ -39,6 +40,35 @@ adminRouter.get(
   "/stalls/rankings",
   asyncHandler(async (_req, res) => {
     res.json(await ratingService.getStallRankings());
+  }),
+);
+
+// ---- Offers & Promotions (campus-wide view) ----
+
+adminRouter.get(
+  "/offers",
+  asyncHandler(async (_req, res) => {
+    res.json(
+      await prisma.offer.findMany({
+        include: { stall: { select: { name: true, block: true } } },
+        orderBy: { createdAt: "desc" },
+      }),
+    );
+  }),
+);
+
+adminRouter.get(
+  "/offers/analytics",
+  asyncHandler(async (_req, res) => {
+    res.json(await offerService.getCampusOfferAnalytics());
+  }),
+);
+
+adminRouter.post(
+  "/offers/:offerId/:action(activate|deactivate)",
+  asyncHandler(async (req, res) => {
+    const offer = await offerService.adminSetOfferActive(req.params.offerId, req.params.action === "activate");
+    res.json(offer);
   }),
 );
 

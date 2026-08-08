@@ -16,6 +16,7 @@ import * as orderService from "../services/orderService";
 import * as studentService from "../services/studentService";
 import * as preferenceService from "../services/preferenceService";
 import * as ratingService from "../services/ratingService";
+import * as offerService from "../services/offerService";
 import { sendWhatsAppText, sendWhatsAppButtons, sendWhatsAppList, type ListRow } from "../whatsapp/client";
 import {
   HOME_BUTTON_IDS,
@@ -71,7 +72,8 @@ Rules:
 - A "Known references" block may follow with name -> id lookups from earlier in this conversation. Use those ids directly instead of calling a tool again for something you already looked up — but never invent an id that isn't listed there or in a tool result. This also covers references like "the first one" or "that one", or a bare number like "2" after you've numbered a list — resolve them yourself from what you just listed, don't ask the student to repeat themselves.
 - NEVER show raw database ids to the student, and NEVER repeat or summarize the "Known references" block back in your reply — that block is for your own internal use only, the student must never see it or anything resembling it. When listing stalls or items, number them (1, 2, 3...) and show just the name/area/price; the student will reply by number or name, and you resolve that yourself using the Known references or the numbered list you just sent.
 - You only have student-facing tools. Never claim to change stall settings, menus, or other students' orders — that's outside what you can do here.
-- list_stalls results may include a rating/ratingCount for a stall — if present, you may mention it briefly (e.g. "⭐ 4.6 (324 Ratings)") when listing stalls. Never mention a rating if it's absent (no ratings yet). Never discuss, invent, or offer to show individual reviews or comments — students only ever see the aggregate number.`;
+- list_stalls results may include a rating/ratingCount for a stall — if present, you may mention it briefly (e.g. "⭐ 4.6 (324 Ratings)") when listing stalls. Never mention a rating if it's absent (no ratings yet). Never discuss, invent, or offer to show individual reviews or comments — students only ever see the aggregate number.
+- list_stalls results may include activeOffers (offer names). If a stall has any, you may mention "🎉 X active offer(s)" briefly. If the student asks about deals, discounts, the cheapest option, or "best deal", call get_stall_offers for the relevant stall and recommend naturally — explain what the offer is and roughly how much it saves, but never invent an offer that wasn't returned by a tool, and never mention an offer that isn't currently active. The best valid offer is applied automatically at checkout — you don't need to do anything extra for that, just mention it exists.`;
 
 // Gemini's free tier has far more headroom than Groq's did, so this can be
 // generous — a multi-step flow (look up stall -> search its menu -> resolve
@@ -488,13 +490,15 @@ async function executeTool(
       });
       session.knownStalls = rememberNames(session.knownStalls, stalls.map((s) => [s.name, s.id]));
       const ratings = await ratingService.getStallRatingSummaries(stalls.map((s) => s.id));
+      const offersByStall = await Promise.all(stalls.map((s) => offerService.getActiveOffersForStall(s.id)));
       // Trimmed to just what the model needs to talk about a stall — the full
       // Prisma row (openingHours, pickupNote, createdAt, status...) was the
       // single biggest contributor to blowing Groq's free-tier token budget,
       // especially on an unscoped "browse everything" call.
-      return stalls.map((s) => {
+      return stalls.map((s, i) => {
         const r = ratings.get(s.id);
-        return { id: s.id, name: s.name, area: s.area, block: s.block, rating: r?.average, ratingCount: r?.count };
+        const activeOffers = offersByStall[i].map((o) => o.name);
+        return { id: s.id, name: s.name, area: s.area, block: s.block, rating: r?.average, ratingCount: r?.count, activeOffers };
       });
     }
 
@@ -616,7 +620,10 @@ async function executeTool(
         const stall = await prisma.stall.findUnique({ where: { id: stallId }, select: { name: true } });
         const itemLines = order.items.map((i) => `${i.quantity}x ${i.itemNameSnapshot}`).join(", ");
         const pickupTime = `${formatSlotTime(order.pickupSlot.startTime)} – ${formatSlotTime(order.pickupSlot.endTime)}`;
-        const summary = `✅ Order placed! #${order.displayId} — ${stall?.name ?? "your stall"}\n${itemLines}\nTotal: ₹${Number(order.totalAmount)}\nPickup: ${pickupTime}`;
+        const offerLine = order.appliedOffer
+          ? `\n🎉 ${order.appliedOffer.offerName} applied (${order.appliedOffer.explanation}) — you saved ₹${order.appliedOffer.discountAmount}!`
+          : "";
+        const summary = `✅ Order placed! #${order.displayId} — ${stall?.name ?? "your stall"}\n${itemLines}\nTotal: ₹${Number(order.totalAmount)}\nPickup: ${pickupTime}${offerLine}`;
         sideEffects.placedOrderId = order.id;
         return { order, summary };
       } catch (err) {
@@ -651,6 +658,23 @@ async function executeTool(
       } catch (err) {
         return { error: err instanceof orderService.OrderError ? err.message : "Could not cancel the order." };
       }
+
+    case "get_stall_offers": {
+      const targetStallId = (args.stall_id as string | undefined) ?? session.activeStallId;
+      if (!targetStallId) return { error: "No stall in context — name a stall or add something to the cart first." };
+      const offers = await offerService.getActiveOffersForStall(targetStallId);
+      return {
+        offers: offers.map((o) => ({
+          id: o.id,
+          name: o.name,
+          description: o.description,
+          type: o.type,
+          minOrderValue: o.minOrderValue != null ? Number(o.minOrderValue) : undefined,
+          discountPercent: o.discountPercent ?? undefined,
+          discountFlat: o.discountFlat != null ? Number(o.discountFlat) : undefined,
+        })),
+      };
+    }
 
     case "get_order_history": {
       const orders = await orderService.getOrderHistoryForStudent(studentId);

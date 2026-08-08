@@ -3,6 +3,7 @@ import { prisma } from "../lib/prisma";
 import { OrderStatus, Prisma } from "@prisma/client";
 import { sendWhatsAppText } from "../whatsapp/client";
 import { recomputeStudentPreferences } from "./preferenceService";
+import { computeBestOffer, type OfferApplication } from "./offerService";
 
 export class OrderError extends Error {}
 
@@ -126,7 +127,7 @@ export async function placeOrder(params: {
     const menuItemIds = lines.map((l) => l.menuItemId);
     const items = await tx.menuItem.findMany({
       where: { id: { in: menuItemIds }, stallId },
-      include: { variants: true },
+      include: { variants: true, category: true },
     });
     const itemsById = new Map(items.map((i) => [i.id, i]));
 
@@ -152,12 +153,32 @@ export async function placeOrder(params: {
       };
     });
 
+    // Automatically apply the single most beneficial active offer, if any —
+    // never left for the student to pick between multiple valid offers.
+    let appliedOffer: OfferApplication | null = null;
+    try {
+      appliedOffer = await computeBestOffer(
+        stallId,
+        lines.map((line) => {
+          const item = itemsById.get(line.menuItemId)!;
+          const unitPrice = line.variantId
+            ? Number(item.variants.find((v) => v.id === line.variantId)?.price ?? item.basePrice)
+            : Number(item.basePrice);
+          return { menuItemId: item.id, categoryName: item.category?.rawLabel, unitPrice, quantity: line.quantity };
+        }),
+      );
+    } catch (err) {
+      console.error("Failed to evaluate offers for order:", err);
+    }
+    const discountAmount = appliedOffer?.discountAmount ?? 0;
+
     const order = await tx.order.create({
       data: {
         studentId,
         stallId,
         pickupSlotId,
-        totalAmount,
+        totalAmount: totalAmount - discountAmount,
+        discountAmount,
         displayId: generateDisplayId(),
         acceptDeadline: new Date(Date.now() + ACCEPT_DEADLINE_MINUTES * 60_000),
         items: { create: orderItemsData },
@@ -165,7 +186,13 @@ export async function placeOrder(params: {
       include: { items: true, pickupSlot: true },
     });
 
-    return order;
+    if (appliedOffer) {
+      await tx.offerRedemption.create({
+        data: { offerId: appliedOffer.offerId, orderId: order.id, discountAmount },
+      });
+    }
+
+    return { ...order, appliedOffer };
   });
 }
 

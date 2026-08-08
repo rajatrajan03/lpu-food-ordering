@@ -151,6 +151,20 @@ export const toolDefinitions: Groq.Chat.Completions.ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "get_stall_offers",
+      description:
+        "Get currently active offers/promotions for a stall (percentage off, flat discount, buy-X-get-Y, free item, combos, happy hour, etc). Call this whenever the student asks about deals, discounts, offers, or 'the cheapest option' for a stall they've already named or that's in context. Never invent an offer that isn't returned here.",
+      parameters: {
+        type: "object",
+        properties: {
+          stall_id: { type: "string", description: "The stall to check — defaults to the cart's current stall if omitted." },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "get_order_history",
       description:
         "Get the student's past orders (any status — placed, completed, cancelled, rejected), most recent first. Use this for 'my order history', 'my past orders', or to find what to re-order when they say 'repeat my last order'.",

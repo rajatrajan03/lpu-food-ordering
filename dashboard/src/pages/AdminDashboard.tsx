@@ -19,6 +19,7 @@ import {
   Search,
   Star,
   Store,
+  Tag,
   Tags,
   Timer,
   TrendingUp,
@@ -99,12 +100,46 @@ const LIVE_STATUSES = new Set(["placed", "accepted", "preparing", "ready"]);
 const NAV_ITEMS: NavItem[] = [
   { key: "overview", label: "Overview", icon: LayoutGrid },
   { key: "stalls", label: "Stalls", icon: Store },
+  { key: "offers", label: "Offers", icon: Tag },
   { key: "categories", label: "Category review", icon: Tags },
   { key: "owners", label: "Assign owners", icon: KeyRound },
   { key: "students", label: "Students", icon: Users },
 ];
 
-type Tab = "overview" | "stalls" | "categories" | "owners" | "students";
+type Tab = "overview" | "stalls" | "offers" | "categories" | "owners" | "students";
+
+interface AdminOffer {
+  id: string;
+  name: string;
+  type: string;
+  active: boolean;
+  validFrom: string;
+  validUntil: string;
+  stall: { name: string; block: string };
+}
+
+interface OfferCampusAnalytic {
+  id: string;
+  name: string;
+  type: string;
+  stallName: string;
+  stallBlock: string;
+  active: boolean;
+  status: "active" | "scheduled" | "expired" | "inactive";
+  usageCount: number;
+  totalDiscountGiven: number;
+}
+
+const OFFER_TYPE_LABEL: Record<string, string> = {
+  percentage_discount: "Percentage Discount",
+  flat_discount: "Flat Discount",
+  buy_x_get_y: "Buy X Get Y",
+  free_item: "Free Item",
+  combo: "Combo Offer",
+  happy_hour: "Happy Hour",
+  festival: "Festival Offer",
+  min_order_value: "Minimum Order Value Offer",
+};
 
 interface StudentRow {
   id: string;
@@ -226,6 +261,7 @@ export default function AdminDashboard() {
       {error && <div className="error-banner" role="alert">{error}</div>}
 
       {tab === "overview" && <OverviewTab overview={overview} activity={activity} rankings={rankings} onNavigate={setTab} />}
+      {tab === "offers" && <AdminOffersTab />}
       {tab === "stalls" && (
         <StallsTab
           stalls={stalls}
@@ -245,6 +281,104 @@ export default function AdminDashboard() {
       {tab === "owners" && <AssignOwnerForm stalls={stalls ?? []} onAssigned={refreshAll} />}
       {tab === "students" && <StudentsTab students={students} total={studentTotal} />}
     </Shell>
+  );
+}
+
+function AdminOffersTab() {
+  const [offers, setOffers] = useState<AdminOffer[] | null>(null);
+  const [analytics, setAnalytics] = useState<OfferCampusAnalytic[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    api<AdminOffer[]>("/api/admin/offers").then(setOffers).catch((e) => setError(e.message));
+    api<OfferCampusAnalytic[]>("/api/admin/offers/analytics").then(setAnalytics).catch((e) => setError(e.message));
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function toggle(offer: AdminOffer) {
+    const action = offer.active ? "deactivate" : "activate";
+    setOffers((prev) => prev?.map((o) => (o.id === offer.id ? { ...o, active: !offer.active } : o)) ?? null);
+    try {
+      await api(`/api/admin/offers/${offer.id}/${action}`, { method: "POST" });
+    } catch (err) {
+      setOffers((prev) => prev?.map((o) => (o.id === offer.id ? { ...o, active: offer.active } : o)) ?? null);
+      setError(err instanceof Error ? err.message : "Could not update offer.");
+    }
+  }
+
+  const totalUsage = analytics?.reduce((s, a) => s + a.usageCount, 0) ?? 0;
+  const totalDiscount = analytics?.reduce((s, a) => s + a.totalDiscountGiven, 0) ?? 0;
+  const analyticsById = new Map((analytics ?? []).map((a) => [a.id, a]));
+
+  return (
+    <>
+      <PageHead title="Offers" subtitle="Every offer running across campus stalls." />
+
+      <div className="stat-row">
+        <StatCard icon={Tag} label="Total offers" tone="accent" value={offers ? offers.length : <Skeleton width={32} height={28} />} />
+        <StatCard icon={CheckCircle2} label="Active" tone="success" value={offers ? offers.filter((o) => o.active).length : <Skeleton width={32} height={28} />} />
+        <StatCard icon={Receipt} label="Orders from offers" tone="info" value={analytics ? totalUsage : <Skeleton width={32} height={28} />} />
+        <StatCard icon={IndianRupee} label="Total discount given" tone="success" value={analytics ? <AnimatedNumber value={totalDiscount} prefix="₹" /> : <Skeleton width={48} height={28} />} />
+      </div>
+
+      {error && <div className="error-banner" role="alert">{error}</div>}
+
+      {!offers && (
+        <div className="card" style={{ padding: 0 }}>
+          <div style={{ padding: "1.2rem" }}><Skeleton height={18} width="40%" /></div>
+        </div>
+      )}
+
+      {offers && offers.length === 0 && (
+        <div className="card"><EmptyState icon={Tag} text="No offers have been created yet." /></div>
+      )}
+
+      {offers && offers.length > 0 && (
+        <div className="card" style={{ padding: 0 }}>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Offer</th>
+                  <th>Stall</th>
+                  <th>Type</th>
+                  <th>Status</th>
+                  <th>Used</th>
+                  <th>Discount given</th>
+                </tr>
+              </thead>
+              <tbody>
+                {offers.map((o) => {
+                  const a = analyticsById.get(o.id);
+                  return (
+                    <tr key={o.id}>
+                      <td style={{ fontWeight: 600 }}>{o.name}</td>
+                      <td className="muted">{o.stall.name} ({o.stall.block})</td>
+                      <td className="muted">{OFFER_TYPE_LABEL[o.type] ?? o.type}</td>
+                      <td>
+                        <button
+                          type="button"
+                          className={`pill ${o.active ? "active" : "paused"}`}
+                          style={{ cursor: "pointer", border: "none" }}
+                          onClick={() => toggle(o)}
+                        >
+                          {a?.status ?? (o.active ? "active" : "inactive")}
+                        </button>
+                      </td>
+                      <td>{a?.usageCount ?? 0}</td>
+                      <td>₹{(a?.totalDiscountGiven ?? 0).toFixed(0)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 

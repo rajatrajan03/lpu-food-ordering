@@ -12,11 +12,14 @@ import {
   IndianRupee,
   ListChecks,
   MessageSquareText,
+  Plus,
   Receipt,
   ShieldAlert,
   Star,
+  Tag,
   Target,
   Timer,
+  Trash2,
   TrendingUp,
   UserX,
   XCircle,
@@ -24,6 +27,7 @@ import {
 import { api } from "../api/client";
 import {
   AnimatedNumber,
+  EmptyState,
   PageHead,
   Shell,
   Skeleton,
@@ -132,9 +136,51 @@ const NEXT_ACTIONS: Record<Order["status"], { label: string; status: string; var
 
 // An unanswered order past this age gets flagged as urgent in the "Needs attention" group.
 const URGENT_MINUTES = 10;
-const NAV_ITEMS: NavItem[] = [{ key: "orders", label: "Orders", icon: Receipt }];
+const NAV_ITEMS: NavItem[] = [
+  { key: "orders", label: "Orders", icon: Receipt },
+  { key: "offers", label: "Offers", icon: Tag },
+];
+
+interface Offer {
+  id: string;
+  name: string;
+  description: string | null;
+  type: string;
+  active: boolean;
+  validFrom: string;
+  validUntil: string;
+  minOrderValue: string | null;
+  maxDiscount: string | null;
+  discountPercent: number | null;
+  discountFlat: string | null;
+  buyQuantity: number | null;
+  getQuantity: number | null;
+  happyHourStart: string | null;
+  happyHourEnd: string | null;
+}
+
+interface OfferAnalytic {
+  id: string;
+  name: string;
+  type: string;
+  status: "active" | "scheduled" | "expired" | "inactive";
+  usageCount: number;
+  totalDiscountGiven: number;
+}
+
+const OFFER_TYPE_LABEL: Record<string, string> = {
+  percentage_discount: "Percentage Discount",
+  flat_discount: "Flat Discount",
+  buy_x_get_y: "Buy X Get Y",
+  free_item: "Free Item",
+  combo: "Combo Offer",
+  happy_hour: "Happy Hour",
+  festival: "Festival Offer",
+  min_order_value: "Minimum Order Value Offer",
+};
 
 export default function OwnerDashboard() {
+  const [tab, setTab] = useState<"orders" | "offers">("orders");
   const [stalls, setStalls] = useState<Stall[] | null>(null);
   const [stallId, setStallId] = useState<string | null>(null);
   const [orders, setOrders] = useState<Order[] | null>(null);
@@ -388,9 +434,13 @@ export default function OwnerDashboard() {
   }, [historyOrders, historyCompleted]);
 
   return (
-    <Shell navItems={NAV_ITEMS} activeKey="orders" onNavigate={() => {}} roleLabel="Stall Owner">
+    <Shell navItems={NAV_ITEMS} activeKey={tab} onNavigate={(k) => setTab(k as "orders" | "offers")} roleLabel="Stall Owner">
       {error && <div className="error-banner" role="alert">{error}</div>}
 
+      {tab === "offers" ? (
+        <OffersTab stallId={stallId} stallName={currentStall?.name} />
+      ) : (
+      <>
       <div className="page-hero">
         <div className="page-hero-row">
           <div className="row" style={{ gap: "0.9rem", alignItems: "flex-start" }}>
@@ -770,7 +820,11 @@ export default function OwnerDashboard() {
         </div>
       </>
       )}
+      </>
+      )}
 
+      {tab === "orders" && (
+      <>
       <div className="section-label">Ratings &amp; Feedback</div>
       <div className="stat-row">
         <StatCard
@@ -823,6 +877,8 @@ export default function OwnerDashboard() {
           </div>
         )}
       </div>
+      </>
+      )}
 
       {undoToastNode}
     </Shell>
@@ -968,5 +1024,311 @@ function OrderCard({
         </div>
       )}
     </motion.div>
+  );
+}
+
+function offerStatus(o: Offer): "active" | "scheduled" | "expired" | "inactive" {
+  if (!o.active) return "inactive";
+  const now = Date.now();
+  if (new Date(o.validFrom).getTime() > now) return "scheduled";
+  if (new Date(o.validUntil).getTime() < now) return "expired";
+  return "active";
+}
+
+function OffersTab({ stallId, stallName }: { stallId: string | null; stallName: string | undefined }) {
+  const [offers, setOffers] = useState<Offer[] | null>(null);
+  const [analytics, setAnalytics] = useState<OfferAnalytic[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState<Offer | "new" | null>(null);
+
+  const load = useCallback(() => {
+    if (!stallId) return;
+    api<Offer[]>(`/api/owner/stalls/${stallId}/offers`).then(setOffers).catch((e) => setError(e.message));
+    api<OfferAnalytic[]>(`/api/owner/stalls/${stallId}/offers/analytics`).then(setAnalytics).catch((e) => setError(e.message));
+  }, [stallId]);
+
+  useEffect(() => {
+    setOffers(null);
+    setAnalytics(null);
+    load();
+  }, [load]);
+
+  async function toggleActive(offer: Offer) {
+    if (!stallId) return;
+    const action = offer.active ? "deactivate" : "activate";
+    setOffers((prev) => prev?.map((o) => (o.id === offer.id ? { ...o, active: !offer.active } : o)) ?? null);
+    try {
+      await api(`/api/owner/stalls/${stallId}/offers/${offer.id}/${action}`, { method: "POST" });
+    } catch (err) {
+      setOffers((prev) => prev?.map((o) => (o.id === offer.id ? { ...o, active: offer.active } : o)) ?? null);
+      setError(err instanceof Error ? err.message : "Could not update offer.");
+    }
+  }
+
+  async function removeOffer(offerId: string) {
+    if (!stallId || !window.confirm("Delete this offer? This cannot be undone.")) return;
+    const prev = offers;
+    setOffers((p) => p?.filter((o) => o.id !== offerId) ?? null);
+    try {
+      await api(`/api/owner/stalls/${stallId}/offers/${offerId}`, { method: "DELETE" });
+    } catch (err) {
+      setOffers(prev);
+      setError(err instanceof Error ? err.message : "Could not delete offer.");
+    }
+  }
+
+  const totalUsage = analytics?.reduce((s, a) => s + a.usageCount, 0) ?? 0;
+  const totalDiscount = analytics?.reduce((s, a) => s + a.totalDiscountGiven, 0) ?? 0;
+  const activeCount = offers?.filter((o) => offerStatus(o) === "active").length ?? 0;
+  const scheduledCount = offers?.filter((o) => offerStatus(o) === "scheduled").length ?? 0;
+  const expiredCount = offers?.filter((o) => offerStatus(o) === "expired").length ?? 0;
+  const analyticsById = new Map((analytics ?? []).map((a) => [a.id, a]));
+
+  return (
+    <>
+      <div className="page-hero">
+        <div className="page-hero-row">
+          <PageHead title="Offers & Promotions" subtitle={stallName ? `Manage discounts and deals for ${stallName}` : undefined} />
+          <button className="primary" onClick={() => setEditing("new")} disabled={!stallId}>
+            <Plus size={15} strokeWidth={2} /> New offer
+          </button>
+        </div>
+      </div>
+
+      {error && <div className="error-banner" role="alert">{error}</div>}
+
+      <div className="stat-row">
+        <StatCard icon={Tag} label="Active offers" tone="success" value={offers ? activeCount : <Skeleton width={32} height={28} />} />
+        <StatCard icon={Clock3} label="Scheduled" tone="info" value={offers ? scheduledCount : <Skeleton width={32} height={28} />} />
+        <StatCard icon={XCircle} label="Expired" tone="warn" value={offers ? expiredCount : <Skeleton width={32} height={28} />} />
+        <StatCard icon={ListChecks} label="Orders from offers" tone="accent" value={analytics ? totalUsage : <Skeleton width={32} height={28} />} />
+        <StatCard icon={IndianRupee} label="Total discount given" tone="success" value={analytics ? <AnimatedNumber value={totalDiscount} prefix="₹" /> : <Skeleton width={48} height={28} />} />
+      </div>
+
+      {!offers && (
+        <div className="card stack">
+          <Skeleton height={20} />
+          <Skeleton height={20} width="70%" />
+        </div>
+      )}
+
+      {offers && offers.length === 0 && (
+        <div className="card"><EmptyState icon={Tag} text="No offers yet — create one to start attracting more orders." /></div>
+      )}
+
+      {offers && offers.length > 0 && (
+        <div className="stack">
+          {offers.map((o) => {
+            const status = offerStatus(o);
+            const a = analyticsById.get(o.id);
+            return (
+              <div key={o.id} className="card">
+                <div className="row between">
+                  <span className="row" style={{ gap: "0.5rem" }}>
+                    <strong>{o.name}</strong>
+                    <span className={`pill ${status === "active" ? "active" : status === "expired" ? "cancelled" : "paused"}`}>{status}</span>
+                  </span>
+                  <div className="row" style={{ gap: "0.4rem" }}>
+                    <button className="ghost small" onClick={() => setEditing(o)}>Edit</button>
+                    <button className="ghost small" onClick={() => toggleActive(o)}>{o.active ? "Deactivate" : "Activate"}</button>
+                    <button className="ghost small" onClick={() => removeOffer(o.id)} aria-label="Delete offer">
+                      <Trash2 size={14} strokeWidth={2} />
+                    </button>
+                  </div>
+                </div>
+                <div className="muted" style={{ fontSize: "0.85rem", marginTop: "0.3rem" }}>
+                  {OFFER_TYPE_LABEL[o.type] ?? o.type}
+                  {o.description ? ` — ${o.description}` : ""}
+                </div>
+                <div className="muted" style={{ fontSize: "0.8rem", marginTop: "0.3rem" }}>
+                  Valid {new Date(o.validFrom).toLocaleDateString()} – {new Date(o.validUntil).toLocaleDateString()}
+                  {a ? ` · Used ${a.usageCount}× · ₹${a.totalDiscountGiven.toFixed(0)} discounted` : ""}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {editing && stallId && (
+        <OfferFormModal
+          stallId={stallId}
+          offer={editing === "new" ? null : editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            load();
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+const OFFER_TYPES = Object.keys(OFFER_TYPE_LABEL);
+
+function OfferFormModal({
+  stallId,
+  offer,
+  onClose,
+  onSaved,
+}: {
+  stallId: string;
+  offer: Offer | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [name, setName] = useState(offer?.name ?? "");
+  const [description, setDescription] = useState(offer?.description ?? "");
+  const [type, setType] = useState(offer?.type ?? "percentage_discount");
+  const [validFrom, setValidFrom] = useState(offer?.validFrom ? offer.validFrom.slice(0, 10) : new Date().toISOString().slice(0, 10));
+  const [validUntil, setValidUntil] = useState(offer?.validUntil ? offer.validUntil.slice(0, 10) : new Date().toISOString().slice(0, 10));
+  const [minOrderValue, setMinOrderValue] = useState(offer?.minOrderValue ?? "");
+  const [maxDiscount, setMaxDiscount] = useState(offer?.maxDiscount ?? "");
+  const [discountPercent, setDiscountPercent] = useState(offer?.discountPercent?.toString() ?? "");
+  const [discountFlat, setDiscountFlat] = useState(offer?.discountFlat ?? "");
+  const [buyQuantity, setBuyQuantity] = useState(offer?.buyQuantity?.toString() ?? "");
+  const [getQuantity, setGetQuantity] = useState(offer?.getQuantity?.toString() ?? "");
+  const [happyHourStart, setHappyHourStart] = useState(offer?.happyHourStart ?? "");
+  const [happyHourEnd, setHappyHourEnd] = useState(offer?.happyHourEnd ?? "");
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const usesPercent = ["percentage_discount", "combo", "festival", "happy_hour"].includes(type);
+  const usesFlat = ["flat_discount", "min_order_value"].includes(type);
+  const usesBuyGet = type === "buy_x_get_y";
+  const usesHappyHour = type === "happy_hour";
+
+  async function save() {
+    setFormError(null);
+    if (!name.trim()) return setFormError("Name is required.");
+    setSaving(true);
+    try {
+      const body = {
+        name,
+        description: description || undefined,
+        type,
+        validFrom: new Date(validFrom).toISOString(),
+        validUntil: new Date(validUntil).toISOString(),
+        minOrderValue: minOrderValue === "" ? null : Number(minOrderValue),
+        maxDiscount: maxDiscount === "" ? null : Number(maxDiscount),
+        discountPercent: discountPercent === "" ? null : Number(discountPercent),
+        discountFlat: discountFlat === "" ? null : Number(discountFlat),
+        buyQuantity: buyQuantity === "" ? null : Number(buyQuantity),
+        getQuantity: getQuantity === "" ? null : Number(getQuantity),
+        happyHourStart: happyHourStart || null,
+        happyHourEnd: happyHourEnd || null,
+      };
+      if (offer) {
+        await api(`/api/owner/stalls/${stallId}/offers/${offer.id}`, { method: "PATCH", body });
+      } else {
+        await api(`/api/owner/stalls/${stallId}/offers`, { method: "POST", body });
+      }
+      onSaved();
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : "Could not save offer.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <>
+      <motion.div className="slide-over-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} />
+      <motion.div
+        className="slide-over"
+        role="dialog"
+        aria-modal="true"
+        aria-label={offer ? "Edit offer" : "New offer"}
+        initial={{ x: "100%" }}
+        animate={{ x: 0 }}
+        exit={{ x: "100%" }}
+        transition={{ duration: 0.28, ease: "easeOut" }}
+      >
+        <div className="slide-over-header">
+          <div style={{ fontWeight: 700, fontSize: "1.05rem" }}>{offer ? "Edit offer" : "New offer"}</div>
+        </div>
+        <div className="slide-over-body">
+          <div className="field">
+            <label>Name</label>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Weekend 20% Off" />
+          </div>
+          <div className="field">
+            <label>Description</label>
+            <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Optional" />
+          </div>
+          <div className="field">
+            <label>Offer type</label>
+            <select value={type} onChange={(e) => setType(e.target.value)}>
+              {OFFER_TYPES.map((t) => (
+                <option key={t} value={t}>{OFFER_TYPE_LABEL[t]}</option>
+              ))}
+            </select>
+          </div>
+          <div className="row" style={{ gap: "0.6rem" }}>
+            <div className="field" style={{ flex: 1 }}>
+              <label>Valid from</label>
+              <input type="date" value={validFrom} onChange={(e) => setValidFrom(e.target.value)} />
+            </div>
+            <div className="field" style={{ flex: 1 }}>
+              <label>Valid until</label>
+              <input type="date" value={validUntil} onChange={(e) => setValidUntil(e.target.value)} />
+            </div>
+          </div>
+          {usesPercent && (
+            <div className="field">
+              <label>Discount percent</label>
+              <input type="number" min={0} max={100} value={discountPercent} onChange={(e) => setDiscountPercent(e.target.value)} />
+            </div>
+          )}
+          {usesFlat && (
+            <div className="field">
+              <label>Flat discount (₹)</label>
+              <input type="number" min={0} value={discountFlat} onChange={(e) => setDiscountFlat(e.target.value)} />
+            </div>
+          )}
+          {usesBuyGet && (
+            <div className="row" style={{ gap: "0.6rem" }}>
+              <div className="field" style={{ flex: 1 }}>
+                <label>Buy quantity</label>
+                <input type="number" min={1} value={buyQuantity} onChange={(e) => setBuyQuantity(e.target.value)} />
+              </div>
+              <div className="field" style={{ flex: 1 }}>
+                <label>Get quantity free</label>
+                <input type="number" min={1} value={getQuantity} onChange={(e) => setGetQuantity(e.target.value)} />
+              </div>
+            </div>
+          )}
+          {usesHappyHour && (
+            <div className="row" style={{ gap: "0.6rem" }}>
+              <div className="field" style={{ flex: 1 }}>
+                <label>Happy hour start</label>
+                <input type="time" value={happyHourStart} onChange={(e) => setHappyHourStart(e.target.value)} />
+              </div>
+              <div className="field" style={{ flex: 1 }}>
+                <label>Happy hour end</label>
+                <input type="time" value={happyHourEnd} onChange={(e) => setHappyHourEnd(e.target.value)} />
+              </div>
+            </div>
+          )}
+          <div className="field">
+            <label>Minimum order value (₹, optional)</label>
+            <input type="number" min={0} value={minOrderValue} onChange={(e) => setMinOrderValue(e.target.value)} />
+          </div>
+          <div className="field">
+            <label>Maximum discount (₹, optional)</label>
+            <input type="number" min={0} value={maxDiscount} onChange={(e) => setMaxDiscount(e.target.value)} />
+          </div>
+          {formError && <div className="field-error">{formError}</div>}
+        </div>
+        <div className="slide-over-foot">
+          <button className="ghost" onClick={onClose}>Cancel</button>
+          <button className="primary" style={{ flex: 1 }} disabled={saving} onClick={save}>
+            {saving && <span className="spinner" />}
+            {saving ? "Saving…" : "Save offer"}
+          </button>
+        </div>
+      </motion.div>
+    </>
   );
 }

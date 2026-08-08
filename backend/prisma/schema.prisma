@@ -39,6 +39,17 @@ enum RatingReason {
   other
 }
 
+enum OfferType {
+  percentage_discount
+  flat_discount
+  buy_x_get_y
+  free_item
+  combo
+  happy_hour
+  festival
+  min_order_value
+}
+
 model Student {
   id                 String   @id @default(uuid())
   whatsappNumber     String   @unique @map("whatsapp_number")
@@ -60,6 +71,65 @@ model Student {
   ratings    Rating[]
 
   @@map("students")
+}
+
+model Offer {
+  id          String    @id @default(uuid())
+  stallId     String    @map("stall_id")
+  name        String
+  description String?
+  type        OfferType
+  active      Boolean   @default(true)
+  validFrom   DateTime  @map("valid_from")
+  validUntil  DateTime  @map("valid_until")
+
+  // Optional constraints/params — which fields are meaningful depends on `type`.
+  minOrderValue     Decimal? @map("min_order_value") @db.Decimal(10, 2)
+  maxDiscount       Decimal? @map("max_discount") @db.Decimal(10, 2)
+  discountPercent   Int?     @map("discount_percent")
+  discountFlat      Decimal? @map("discount_flat") @db.Decimal(10, 2)
+  // buy_x_get_y: buy `buyQuantity` of an applicable item, get `getQuantity` free.
+  buyQuantity       Int?     @map("buy_quantity")
+  getQuantity       Int?     @map("get_quantity")
+  // free_item / the "get" side of buy_x_get_y.
+  freeItemId        String?  @map("free_item_id")
+  // happy_hour: 24h "HH:MM" — only valid within this daily window.
+  happyHourStart    String?  @map("happy_hour_start")
+  happyHourEnd      String?  @map("happy_hour_end")
+  // Empty arrays mean "applies to the whole stall menu" — not FK-backed
+  // (matches this app's on-the-fly-aggregation-over-denormalized-tables
+  // convention elsewhere); ids are validated against the stall's own menu
+  // at create/update time in offerService, not enforced at the DB level.
+  applicableItemIds       String[] @map("applicable_item_ids")
+  applicableCategoryNames String[] @map("applicable_category_names")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  stall       Stall             @relation(fields: [stallId], references: [id], onDelete: Cascade)
+  freeItem    MenuItem?         @relation(fields: [freeItemId], references: [id])
+  redemptions OfferRedemption[]
+
+  @@index([stallId])
+  @@map("offers")
+}
+
+// One row per order an offer was actually applied to — the source of truth
+// for usage count / total discount given / orders generated, computed on
+// the fly via aggregation (same convention as Rating), not denormalized
+// counters on Offer itself.
+model OfferRedemption {
+  id             String   @id @default(uuid())
+  offerId        String   @map("offer_id")
+  orderId        String   @unique @map("order_id")
+  discountAmount Decimal  @map("discount_amount") @db.Decimal(10, 2)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  offer Offer @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([offerId])
+  @@map("offer_redemptions")
 }
 
 // Learned ordering habits, recomputed from a student's completed orders
@@ -114,6 +184,7 @@ model Stall {
   orders       Order[]
   favoritedBy  StudentPreference[]
   ratings      Rating[]
+  offers       Offer[]
 
   // A brand can have multiple physical outlets — (block, name) is the real identity.
   @@unique([block, name])
@@ -191,6 +262,7 @@ model MenuItem {
   category MenuCategory? @relation(fields: [categoryId], references: [id])
   variants ItemVariant[]
   orderItems OrderItem[]
+  freeInOffers Offer[]
 
   @@index([stallId])
   @@map("menu_items")
@@ -236,6 +308,9 @@ model Order {
   pickupSlotId   String      @map("pickup_slot_id")
   status         OrderStatus @default(placed)
   totalAmount    Decimal     @map("total_amount") @db.Decimal(10, 2)
+  // Amount already subtracted from what the cart would otherwise have cost —
+  // totalAmount above is the final, post-discount amount actually charged.
+  discountAmount Decimal     @default(0) @map("discount_amount") @db.Decimal(10, 2)
   cancelledReason String?    @map("cancelled_reason")
   placedAt       DateTime    @default(now()) @map("placed_at")
   updatedAt      DateTime    @updatedAt @map("updated_at")
@@ -264,6 +339,7 @@ model Order {
   pickupSlot PickupSlot  @relation(fields: [pickupSlotId], references: [id])
   items      OrderItem[]
   rating     Rating?
+  offerRedemption OfferRedemption?
 
   @@index([stallId, status])
   @@map("orders")
