@@ -38,6 +38,7 @@ interface Stall {
   status: string;
   nightOpen: boolean;
   pickupNote: string | null;
+  pickupGraceMinutes: number | null;
   owners: { id: string; name: string; phone: string }[];
 }
 
@@ -851,16 +852,31 @@ function StallDetailPanel({
 }) {
   const [name, setName] = useState(stall.name);
   const [pickupNote, setPickupNote] = useState(stall.pickupNote ?? "");
+  // Text state (not number) so the field can be genuinely empty — empty
+  // means "use the app-wide default", not 0 minutes.
+  const [graceMinutesInput, setGraceMinutesInput] = useState(
+    stall.pickupGraceMinutes != null ? String(stall.pickupGraceMinutes) : "",
+  );
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
 
+  const graceMinutesTrimmed = graceMinutesInput.trim();
+  const graceMinutesParsed = graceMinutesTrimmed === "" ? null : Number(graceMinutesTrimmed);
+  const graceMinutesInvalid =
+    graceMinutesTrimmed !== "" &&
+    (!Number.isInteger(graceMinutesParsed) || graceMinutesParsed! < 0 || graceMinutesParsed! > 60);
+
   async function save() {
+    if (graceMinutesInvalid) return;
     setSaving(true);
     setSaved(false);
     try {
-      await api(`/api/admin/stalls/${stall.id}`, { method: "PATCH", body: { name, pickupNote } });
-      onSaved({ ...stall, name, pickupNote });
+      await api(`/api/admin/stalls/${stall.id}`, {
+        method: "PATCH",
+        body: { name, pickupNote, pickupGraceMinutes: graceMinutesParsed },
+      });
+      onSaved({ ...stall, name, pickupNote, pickupGraceMinutes: graceMinutesParsed });
       setSaved(true);
     } finally {
       setSaving(false);
@@ -975,11 +991,36 @@ function StallDetailPanel({
               }}
             />
           </div>
+
+          <div className="field">
+            <label>Pickup grace period (minutes)</label>
+            <input
+              type="number"
+              min={0}
+              max={60}
+              step={1}
+              placeholder="Default (10 min)"
+              value={graceMinutesInput}
+              onChange={(e) => {
+                setGraceMinutesInput(e.target.value);
+                setSaved(false);
+              }}
+              aria-invalid={graceMinutesInvalid}
+            />
+            {graceMinutesInvalid ? (
+              <span className="field-error">Enter a whole number between 0 and 60, or leave blank for the default.</span>
+            ) : (
+              <span className="muted" style={{ fontSize: "0.78rem", marginTop: "0.35rem" }}>
+                How long, past a pickup slot's end, a student has before their ready order is closed out as a no-show.
+                Leave blank to use the app-wide default (10 minutes).
+              </span>
+            )}
+          </div>
         </div>
 
         <div className="slide-over-foot">
           <button className="ghost" onClick={onClose}>Close</button>
-          <button className="primary" style={{ flex: 1 }} disabled={saving} onClick={save}>
+          <button className="primary" style={{ flex: 1 }} disabled={saving || graceMinutesInvalid} onClick={save}>
             {saving && <span className="spinner" />}
             {saving ? "Saving…" : saved ? "Saved ✓" : "Save changes"}
           </button>

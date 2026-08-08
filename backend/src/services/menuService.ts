@@ -155,6 +155,26 @@ export async function listStalls(
 }
 
 /**
+ * Active, currently-eligible stalls ordered by total order volume — the
+ * last-resort tier of the auto-reject alternative-stall fallback, for when
+ * neither the original stall's area nor its block has anything else to
+ * offer. No rating system exists in the schema, so "most active" is the
+ * honest proxy: stalls students have actually ordered from the most.
+ */
+export async function listMostActiveStalls(opts: { limit?: number; excludeIds?: string[] } = {}) {
+  const { limit = 3, excludeIds = [] } = opts;
+  return prisma.stall.findMany({
+    where: {
+      status: "active",
+      ...(isNightTimeIST() ? { nightOpen: true } : {}),
+      ...(excludeIds.length ? { id: { notIn: excludeIds } } : {}),
+    },
+    orderBy: { orders: { _count: "desc" } },
+    take: limit,
+  });
+}
+
+/**
  * `slotDate` (DATE) and `startTime`/`endTime` (TIME) are stored separately,
  * so the actual instant a slot happens at has to be reassembled from both —
  * they were generated together as one absolute moment (see slotGenerator.ts)

@@ -58,8 +58,19 @@ function formatSlotTime(t: Date): string {
  * thread with no way to separate them; the content itself has to make it
  * obvious which order a given push is about.
  */
-async function notifyStudentOfStatus(order: { id: string; studentId: string; status: OrderStatus }): Promise<void> {
-  const line = STATUS_LINES[order.status];
+async function notifyStudentOfStatus(order: {
+  id: string;
+  studentId: string;
+  status: OrderStatus;
+  noShow?: boolean;
+}): Promise<void> {
+  // No-show closures reach status "completed" like a normal pickup, but
+  // need their own distinct message — STATUS_LINES has no "completed"
+  // entry at all (a normal completion is silent by design), so this has
+  // to be checked before falling back to the status-keyed line.
+  const line = order.noShow
+    ? "Your pickup window has expired and this order has been marked as a No Show. If you still need assistance, please contact the stall."
+    : STATUS_LINES[order.status];
   if (!line) return;
   try {
     const full = await prisma.order.findUnique({
@@ -176,14 +187,24 @@ export async function cancelOrder(orderIdentifier: string, studentId: string) {
         "This order can no longer be cancelled — the stall has already started preparing it.",
       );
     }
+
+    // Conditional on the status we just validated against — same
+    // optimistic-concurrency guard as transitionOrderStatus, so a student
+    // cancelling can't silently clobber (or be clobbered by) the owner/SLA
+    // sweep transitioning the same order at the same moment.
+    const result = await tx.order.updateMany({
+      where: { id: order.id, status: order.status },
+      data: { status: "cancelled", cancelledReason: "Cancelled by student" },
+    });
+    if (result.count === 0) {
+      throw new OrderError("This order was just updated elsewhere — please check its current status and try again.");
+    }
+
     await tx.pickupSlot.update({
       where: { id: order.pickupSlotId },
       data: { bookedCount: { decrement: 1 } },
     });
-    return tx.order.update({
-      where: { id: order.id },
-      data: { status: "cancelled", cancelledReason: "Cancelled by student" },
-    });
+    return tx.order.findUniqueOrThrow({ where: { id: order.id } });
   });
 }
 
@@ -217,15 +238,9 @@ export async function transitionOrderStatus(
     if (!ALLOWED_TRANSITIONS[order.status].includes(nextStatus)) {
       throw new OrderError(`Cannot move order from ${order.status} to ${nextStatus}.`);
     }
-    if (nextStatus === "rejected" || nextStatus === "cancelled") {
-      await tx.pickupSlot.update({
-        where: { id: order.pickupSlotId },
-        data: { bookedCount: { decrement: 1 } },
-      });
-    }
 
     const now = new Date();
-    const data: Prisma.OrderUpdateInput = { status: nextStatus };
+    const data: Prisma.OrderUpdateManyMutationInput = { status: nextStatus };
     if (nextStatus === "accepted") {
       data.acceptedAt = now;
     }
@@ -249,7 +264,30 @@ export async function transitionOrderStatus(
       data.noShowAt = now;
     }
 
-    return tx.order.update({ where: { id: orderId }, data });
+    // Conditional write — only succeeds if the order is still in the exact
+    // status we just validated the transition against. This is what
+    // actually prevents a race between an owner action and the SLA sweep
+    // (e.g. an owner tapping Accept the same moment the auto-reject sweep
+    // fires for the same order): whichever call's conditional update lands
+    // first wins and the loser gets a clear error instead of silently
+    // overwriting the winner's result. Same pattern already used for
+    // pickup-slot capacity in placeOrder().
+    const result = await tx.order.updateMany({ where: { id: orderId, status: order.status }, data });
+    if (result.count === 0) {
+      throw new OrderError("This order was just updated elsewhere — please refresh and try again.");
+    }
+
+    // Only release the slot once we know we actually won the race —
+    // releasing it unconditionally first (before the guard above) could
+    // double-release if this transaction ultimately lost the race.
+    if (nextStatus === "rejected" || nextStatus === "cancelled") {
+      await tx.pickupSlot.update({
+        where: { id: order.pickupSlotId },
+        data: { bookedCount: { decrement: 1 } },
+      });
+    }
+
+    return tx.order.findUniqueOrThrow({ where: { id: orderId } });
   }).then(async (order) => {
     await notifyStudentOfStatus(order);
     // Learned preferences (favorite stall/meal-period/usual order) are only
