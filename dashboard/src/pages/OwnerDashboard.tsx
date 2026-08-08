@@ -412,6 +412,7 @@ export default function OwnerDashboard() {
       </div>
 
       {isToday ? (
+      <>
       <div className="stat-row">
         <StatCard
           icon={Clock3}
@@ -649,6 +650,7 @@ export default function OwnerDashboard() {
           </div>
         </aside>
       </div>
+      </>
       ) : (
       <>
         <div className="stat-row">
