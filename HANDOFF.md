@@ -2,7 +2,7 @@
 
 **Purpose:** a complete handoff so a new engineer (or Claude session) can pick this project up with zero prior context. Read this whole document before touching code. The previous version of this file described an early, local-only, Groq-powered prototype — that phase is over. Everything below reflects the system as actually deployed today.
 
-**Last updated:** 2026-08-08 (Stall Rating & Feedback, Offers & Promotions Engine, AI Business Assistant, an Advanced Analytics Platform, and an AI Demand Forecasting System shipped this session — see §4.9–§4.13).
+**Last updated:** 2026-08-09 (Stall Rating & Feedback, Offers & Promotions Engine, AI Business Assistant, an Advanced Analytics Platform, an AI Demand Forecasting System, and a production security hardening pass shipped this session — see §4.9–§4.14).
 
 ---
 
@@ -196,6 +196,21 @@ Pickup slots are real `PickupSlot` rows (`slotDate` DATE + `startTime`/`endTime`
 - `GET /api/owner/stalls/:id/forecast` / `GET /api/admin/forecast` — no query params (always forecasts "tomorrow"); the dashboard has a manual "Regenerate" button rather than auto-refreshing, since each call is a real Gemini request.
 - Verified via `tmpTest*.ts` scripts (deleted after use, per convention) against real production data — correctly reported insufficient data at current volumes — and against synthetic historical orders (12 orders across 6 distinct days, cleaned up after the run), which produced a full, schema-valid, data-grounded forecast on both endpoints.
 
+## 4.14 Production security hardening
+
+Closes most of §7's "High/Medium priority" security gaps (marked `~~done~~` there) — all additive, no existing route's request/response shape changed.
+
+- **Webhook signature verification** (`routes/webhook.ts`): `X-Hub-Signature-256` is HMAC-SHA256-verified against the raw request body (captured via `express.json({ verify })` in `server.ts`, since a re-serialized body can differ byte-for-byte from what Meta actually signed). **Backward compatible on purpose**: if `WHATSAPP_APP_SECRET` isn't set, verification is skipped with a one-time warning rather than breaking the live webhook — it isn't set on Render yet (§7 item 4), so this is currently running in warn-only mode until that env var is added.
+- **Rate limiting** (`lib/rateLimit.ts`, `express-rate-limit`): `apiLimiter` (600/15min) on `/api/owner` + `/api/admin`, `authLimiter` (15/15min) on every login endpoint, `otpLimiter` (8/5min) on OTP verification, `webhookLimiter` (120/min) on the webhook. **Critical gotcha caught during local verification, not after deploying**: `express-rate-limit` throws on every request if it sees an `X-Forwarded-For` header (which Render's proxy always adds) without Express's `trust proxy` set — `server.ts` now sets `app.set("trust proxy", 1)`. This was pushed as an immediate follow-up commit before it could take down production; if you ever see `ERR_ERL_UNEXPECTED_X_FORWARDED_FOR`-style errors after touching rate limiting, this is why.
+- **Secure OTP**: `crypto.randomInt(100000, 1000000)` instead of `Math.random()`.
+- **JWT hardening + logout** (`lib/auth.ts`): tokens now carry `iss`/`aud`/`jti` claims (rejects tokens minted for a different purpose/service); `POST /api/auth/logout` revokes the caller's own token via an in-memory `jti → expiry` map checked on every `requireAuth` call. **Known limitation** (documented in code, same pattern as `slaMonitor`'s in-process sweep): revocations live in memory only — lost on restart, not shared across instances. Fine for the current single-instance deployment; would need a shared store (DB/Redis) if this is ever scaled horizontally. The dashboard's existing logout button now calls this endpoint (best-effort — clears local auth and navigates away regardless of the network result).
+- **Env validation** (`lib/env.ts`, called first thing in `server.ts`): fails fast in production if `DATABASE_URL` is missing, if `JWT_SECRET`/`WHATSAPP_*`/`GEMINI_API_KEY` are missing, or if `JWT_SECRET` is still the literal placeholder value — warns (doesn't block) on missing optional vars (`WHATSAPP_APP_SECRET`, `GOOGLE_CLIENT_ID`) so local dev without full WhatsApp credentials still works.
+- **`/health`** now runs `SELECT 1` against the real database and returns `{status, db, uptimeSeconds, latencyMs}` (or 503 `{status:"degraded", db:"unreachable"}`) instead of a static `{status:"ok"}`.
+- **Structured logging + audit trail** (`lib/logger.ts`): single-line JSON logs (`logger.info/warn/error`) used for the new security-relevant code paths (env validation, rate-limit rejections, rejected/invalid tokens, invalid webhook signatures, the global error handler) plus a new `auditLog()` helper wired into: login success/failure (owner + admin, password and Google), OTP issuance/expiry/incorrect-code, logout, offer create/update/delete/activate/deactivate (owner and admin), stall pause/resume/PATCH, bulk stall status changes, owner-account creation, and menu-item edits. **Deliberately not a full logging rewrite** — the many existing plain `console.log`/`console.error` calls throughout the app are untouched; this new logger is additive, specifically for events worth being able to grep/filter as `audit: true`.
+- **Request correlation**: a per-request `X-Request-Id` (generated if the client doesn't send one) is echoed back and included in every error log line from the global handler, so a user-reported error can be matched to exact server-side log entries.
+- **Startup WhatsApp token visibility**: a best-effort, non-blocking call to Meta's `debug_token` endpoint at boot logs whether the current access token is permanent (System User) or short-lived (USER) — pure observability, doesn't change how the token is used (see §3, still not fixed operationally).
+- Verified end-to-end against a real running instance (not mocked, temporary `tsx src/server.ts` process on a scratch port): signed/unsigned/incorrectly-signed webhook payloads, `/health`'s DB check, a full login → protected-route → wrong-role-403 → logout → revoked-token-401 flow using a disposable owner fixture (created and deleted via Prisma), and the auth rate limiter actually returning 429 under repeated bad logins — plus the trust-proxy fix specifically verified against a request carrying a spoofed `X-Forwarded-For` header before it ever reached production.
+
 ---
 
 # 5. Database
@@ -264,20 +279,20 @@ Source of truth: `backend/prisma/schema.prisma` — always read it directly, thi
 # 7. Known open issues / remaining work
 
 ## High priority
-1. **WhatsApp access token is not permanent** (§3) — the single biggest recurring operational chore. Needs a System User token.
+1. **WhatsApp access token is not permanent** (§3) — the single biggest recurring operational chore. Needs a System User token. (Startup now logs the token's type/expiry via Meta's `debug_token` endpoint — see §4.14 — but generating the permanent token itself is still a manual one-time Meta Business Settings step nobody has done yet.)
 2. **No cron for pickup-slot generation** — `npm run generate:slots` must be run manually or scheduled externally.
 3. **No `completed`-status WhatsApp notification** — `STATUS_LINES` has no entry for it.
-4. **No WhatsApp webhook signature verification** — `POST /webhook/whatsapp` trusts any correctly-shaped payload; only the one-time `GET` handshake checks `verify_token`. Should verify `X-Hub-Signature-256` against the Meta app secret.
+4. ~~No WhatsApp webhook signature verification~~ — **Done** (§4.14): `X-Hub-Signature-256` is verified when `WHATSAPP_APP_SECRET` is set. **Still open:** that env var isn't set on Render yet, so verification is currently running in its backward-compatible "skip + warn" mode — add `WHATSAPP_APP_SECRET` (Meta App Dashboard → Settings → Basic) to actually enforce it.
 
 ## Medium priority
 5. **No WhatsApp message templates** — all messaging is free-form, only valid within the 24-hour customer-service window. An order-ready notification sent after that window silently fails to reach the student.
-6. **No rate-limiting** anywhere (login, OTP verify, webhook).
-7. **`JWT_SECRET` falls back to an insecure hardcoded default** if unset — currently only safe because the env var is actually set on Render.
-8. **OTP generation uses `Math.random()`**, not a CSPRNG.
-9. **No token revocation/logout** — JWTs are stateless, valid for the full 12h.
+6. ~~No rate-limiting~~ — **Done** (§4.14): general/auth/OTP/webhook limiters via `express-rate-limit`.
+7. ~~`JWT_SECRET` insecure default~~ — **Done** (§4.14): startup now refuses to run in production with the placeholder value.
+8. ~~OTP generation uses `Math.random()`~~ — **Done** (§4.14): switched to `crypto.randomInt`.
+9. ~~No token revocation/logout~~ — **Done** (§4.14): `POST /api/auth/logout` + in-memory jti revocation set.
 10. **No automated tests anywhere** — everything verified via live manual/scripted testing (see `backend/src/scripts/testChat.ts` for the manual chat-testing CLI; ad-hoc `tmpTest*.ts` scripts were used throughout this session and deleted after each verification — that's the established pattern for testing a change before shipping it).
-11. **No structured logging / error tracking** — `console.log`/`console.error` only, no Sentry-equivalent.
-12. **`/health` doesn't check DB connectivity.**
+11. ~~No structured logging / error tracking~~ — **Partially done** (§4.14): new `lib/logger.ts` (structured JSON) + `auditLog()` cover auth/webhook/rate-limit events and the sensitive mutations listed there. Still no external error-tracking service (Sentry-equivalent), and most non-security `console.log`/`console.error` calls elsewhere in the app are untouched by design (see §4.14's rationale).
+12. ~~`/health` doesn't check DB connectivity~~ — **Done** (§4.14): now runs `SELECT 1` and reports `db`/`uptimeSeconds`/`latencyMs`.
 13. **Dashboard pagination** — Students tab, activity feed, menu items all render unbounded lists.
 14. **Admin Dashboard has no per-order table** — only aggregate stats; no order-level view/search for the Super Admin.
 
