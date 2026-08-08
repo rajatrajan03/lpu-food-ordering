@@ -2,6 +2,7 @@ import { prisma } from "../lib/prisma";
 import * as menuService from "../services/menuService";
 import * as orderService from "../services/orderService";
 import * as preferenceService from "../services/preferenceService";
+import * as ratingService from "../services/ratingService";
 import { rememberNames, type SessionState, type CartLine, type BrowseScreen } from "./tools";
 import { sendWhatsAppText, sendWhatsAppButtons, sendWhatsAppList, type ListRow } from "../whatsapp/client";
 
@@ -294,7 +295,13 @@ async function renderStallList(whatsappNumber: string, session: SessionState, ar
     return;
   }
   session.knownStalls = rememberNames(session.knownStalls, stalls.map((s) => [s.name, s.id]));
-  const rows: ListRow[] = stalls.map((s) => ({ id: `stall:${s.id}`, title: s.name.slice(0, 24), description: s.block ?? undefined }));
+  const ratings = await ratingService.getStallRatingSummaries(stalls.map((s) => s.id));
+  const rows: ListRow[] = stalls.map((s) => {
+    const r = ratings.get(s.id);
+    const ratingText = r && r.count > 0 ? `⭐ ${r.average} (${r.count} Ratings)` : undefined;
+    const description = [s.block, ratingText].filter(Boolean).join(" · ") || undefined;
+    return { id: `stall:${s.id}`, title: s.name.slice(0, 24), description: description?.slice(0, 72) };
+  });
   rows.push({ id: NAV_BACK, title: "⬅️ Back" });
   rows.push({ id: NAV_HOME, title: "🏠 Home" });
   await sendWhatsAppList(whatsappNumber, `Stalls near ${area}:`, "Choose stall", rows);

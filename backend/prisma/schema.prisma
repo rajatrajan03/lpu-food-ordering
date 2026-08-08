@@ -29,6 +29,16 @@ enum MealPeriod {
   dinner
 }
 
+// Only asked of the student when they give 3 stars or fewer — matches the
+// reason options actually offered in the WhatsApp flow (see ai/tools.ts).
+enum RatingReason {
+  food_quality
+  service
+  pickup_delay
+  wrong_order
+  other
+}
+
 model Student {
   id                 String   @id @default(uuid())
   whatsappNumber     String   @unique @map("whatsapp_number")
@@ -47,6 +57,7 @@ model Student {
 
   orders     Order[]
   preference StudentPreference?
+  ratings    Rating[]
 
   @@map("students")
 }
@@ -102,6 +113,7 @@ model Stall {
   pickupSlots  PickupSlot[]
   orders       Order[]
   favoritedBy  StudentPreference[]
+  ratings      Rating[]
 
   // A brand can have multiple physical outlets — (block, name) is the real identity.
   @@unique([block, name])
@@ -251,6 +263,7 @@ model Order {
   stall      Stall       @relation(fields: [stallId], references: [id])
   pickupSlot PickupSlot  @relation(fields: [pickupSlotId], references: [id])
   items      OrderItem[]
+  rating     Rating?
 
   @@index([stallId, status])
   @@map("orders")
@@ -270,4 +283,31 @@ model OrderItem {
   variant  ItemVariant? @relation(fields: [variantId], references: [id])
 
   @@map("order_items")
+}
+
+// One rating per completed order — enforced at the DB level via the unique
+// constraint on orderId, not just in application code. Anonymous by design:
+// students only ever see a stall's aggregate (average + count), never
+// individual ratings/comments/reviewer identity; stall owners and the Super
+// Admin see aggregates plus recent comments, but never which student left
+// a given one — "anonymous" is a property of the rating itself, not just
+// something hidden from other students.
+model Rating {
+  id        String        @id @default(uuid())
+  orderId   String        @unique @map("order_id")
+  studentId String        @map("student_id")
+  stallId   String        @map("stall_id")
+  stars     Int
+  // Only set when stars <= 3 — matches the WhatsApp flow, which only asks
+  // "what went wrong?" for a low rating.
+  reason    RatingReason?
+  comment   String?
+  createdAt DateTime      @default(now()) @map("created_at")
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  student Student @relation(fields: [studentId], references: [id])
+  stall   Stall   @relation(fields: [stallId], references: [id])
+
+  @@index([stallId])
+  @@map("ratings")
 }

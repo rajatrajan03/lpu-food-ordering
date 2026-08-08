@@ -12,6 +12,8 @@ import {
   transitionOrderStatus,
   OrderError,
 } from "../services/orderService";
+import { triggerRatingPrompt } from "../ai/ratingFlow";
+import * as ratingService from "../services/ratingService";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -101,11 +103,31 @@ ownerOrdersRouter.post(
 
     try {
       const order = await transitionOrderStatus(orderId, stallId, parsed.data.status);
+      if (parsed.data.status === "completed") {
+        // Fire-and-forget: never delay the owner's response for a WhatsApp send.
+        // This route is the only place a genuine owner-driven completion
+        // originates (slaMonitor's no-show sweep calls transitionOrderStatus
+        // directly, not through here), so no-show closures never trigger a prompt.
+        triggerRatingPrompt({ id: order.id, studentId: order.studentId, stallId: order.stallId }).catch((err) =>
+          console.error("Failed to trigger rating prompt:", err),
+        );
+      }
       res.json(order);
     } catch (err) {
       if (err instanceof OrderError) return res.status(409).json({ error: err.message });
       throw err;
     }
+  }),
+);
+
+ownerOrdersRouter.get(
+  "/stalls/:stallId/ratings",
+  asyncHandler(async (req, res) => {
+    const { stallId } = req.params;
+    if (!(await assertOwnsStall(req.auth!.id, stallId))) {
+      return res.status(403).json({ error: "You do not manage this stall." });
+    }
+    res.json(await ratingService.getStallRatingDetail(stallId));
   }),
 );
 

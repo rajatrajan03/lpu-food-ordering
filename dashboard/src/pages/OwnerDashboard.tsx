@@ -11,8 +11,10 @@ import {
   Hourglass,
   IndianRupee,
   ListChecks,
+  MessageSquareText,
   Receipt,
   ShieldAlert,
+  Star,
   Target,
   Timer,
   TrendingUp,
@@ -74,6 +76,21 @@ interface SlaMetrics {
   customerNoShows: number;
 }
 
+const RATING_REASON_LABEL: Record<string, string> = {
+  food_quality: "🍔 Food Quality",
+  service: "👨‍🍳 Service",
+  pickup_delay: "⏱ Pickup Delay",
+  wrong_order: "📦 Wrong Order",
+  other: "💬 Other",
+};
+
+interface RatingDetail {
+  average: number | null;
+  count: number;
+  breakdown: { reason: string; count: number }[];
+  recentComments: { stars: number; reason: string | null; comment: string | null; createdAt: string }[];
+}
+
 /** Exact placed-at timestamp for staff-facing views (order cards, KOT) — students only ever see the order number, never this. */
 function formatPlacedAt(iso: string): string {
   return new Date(iso).toLocaleString("en-IN", {
@@ -123,6 +140,7 @@ export default function OwnerDashboard() {
   const [orders, setOrders] = useState<Order[] | null>(null);
   const [completedToday, setCompletedToday] = useState<Order[] | null>(null);
   const [slaMetrics, setSlaMetrics] = useState<SlaMetrics | null>(null);
+  const [ratingDetail, setRatingDetail] = useState<RatingDetail | null>(null);
   const [showCompleted, setShowCompleted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actingOn, setActingOn] = useState<string | null>(null);
@@ -193,6 +211,15 @@ export default function OwnerDashboard() {
     if (!stallId || isToday) return;
     loadHistory(stallId, selectedDate);
   }, [stallId, isToday, selectedDate, loadHistory]);
+
+  // Ratings aren't day-scoped, so this loads once per stall selection —
+  // independent of both the live-order polling and the date picker.
+  useEffect(() => {
+    if (!stallId) return;
+    api<RatingDetail>(`/api/owner/stalls/${stallId}/ratings`)
+      .then(setRatingDetail)
+      .catch(() => setRatingDetail(null));
+  }, [stallId]);
 
   async function act(orderId: string, status: string) {
     if (!stallId || !orders) return;
@@ -743,6 +770,59 @@ export default function OwnerDashboard() {
         </div>
       </>
       )}
+
+      <div className="section-label">Ratings &amp; Feedback</div>
+      <div className="stat-row">
+        <StatCard
+          icon={Star}
+          label="Average rating"
+          tone="success"
+          value={ratingDetail ? (ratingDetail.average != null ? `${ratingDetail.average} ★` : "—") : <Skeleton width={48} height={28} />}
+        />
+        <StatCard
+          icon={ListChecks}
+          label="Total ratings"
+          tone="accent"
+          value={ratingDetail ? ratingDetail.count : <Skeleton width={32} height={28} />}
+        />
+        {["food_quality", "service", "pickup_delay"].map((key) => (
+          <StatCard
+            key={key}
+            icon={AlertTriangle}
+            label={RATING_REASON_LABEL[key]}
+            tone="warn"
+            value={ratingDetail ? ratingDetail.breakdown.find((b) => b.reason === key)?.count ?? 0 : <Skeleton width={32} height={28} />}
+          />
+        ))}
+      </div>
+
+      <div className="card">
+        <div className="card-title row" style={{ gap: "0.35rem" }}>
+          <MessageSquareText size={12} strokeWidth={2.5} /> Recent feedback
+        </div>
+        {!ratingDetail || ratingDetail.recentComments.length === 0 ? (
+          <div className="muted" style={{ fontSize: "0.85rem", marginTop: "0.4rem" }}>
+            No comments yet.
+          </div>
+        ) : (
+          <div className="stack" style={{ marginTop: "0.6rem" }}>
+            {ratingDetail.recentComments.map((c, i) => (
+              <div key={i} className="card" style={{ padding: "0.7rem 0.9rem" }}>
+                <div className="row between">
+                  <span>{"⭐".repeat(c.stars)}</span>
+                  <span className="muted" style={{ fontSize: "0.78rem" }}>{relativeTime(c.createdAt)}</span>
+                </div>
+                {c.reason && (
+                  <div className="muted" style={{ fontSize: "0.8rem", marginTop: "0.2rem" }}>
+                    {RATING_REASON_LABEL[c.reason] ?? c.reason}
+                  </div>
+                )}
+                {c.comment && <div style={{ marginTop: "0.3rem" }}>{c.comment}</div>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       {undoToastNode}
     </Shell>

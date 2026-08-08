@@ -6,6 +6,7 @@ import { requireAuth } from "../lib/auth";
 import { asyncHandler } from "../lib/asyncHandler";
 import { getOverview, getRecentActivity, getStallInsights } from "../services/analyticsService";
 import { listStudents, countStudents } from "../services/studentService";
+import * as ratingService from "../services/ratingService";
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth("super_admin"));
@@ -31,6 +32,13 @@ adminRouter.get(
   "/stalls/insights",
   asyncHandler(async (_req, res) => {
     res.json(await getStallInsights());
+  }),
+);
+
+adminRouter.get(
+  "/stalls/rankings",
+  asyncHandler(async (_req, res) => {
+    res.json(await ratingService.getStallRankings());
   }),
 );
 

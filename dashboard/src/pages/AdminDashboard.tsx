@@ -75,6 +75,14 @@ interface Overview {
   categoryDistribution: { category: string; quantity: number }[];
 }
 
+interface StallRanking {
+  stallId: string;
+  name: string;
+  block: string;
+  average: number;
+  count: number;
+}
+
 interface ActivityItem {
   id: string;
   status: string;
@@ -122,6 +130,7 @@ export default function AdminDashboard() {
   const [unmapped, setUnmapped] = useState<UnmappedCategory[] | null>(null);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [activity, setActivity] = useState<ActivityItem[] | null>(null);
+  const [rankings, setRankings] = useState<StallRanking[] | null>(null);
   const [insights, setInsights] = useState<Record<string, StallInsight>>({});
   const [students, setStudents] = useState<StudentRow[] | null>(null);
   const [studentTotal, setStudentTotal] = useState(0);
@@ -145,6 +154,7 @@ export default function AdminDashboard() {
     api<Overview>("/api/admin/overview").then(setOverview).catch((e) => setError(e.message));
     api<ActivityItem[]>("/api/admin/activity?limit=12").then(setActivity).catch((e) => setError(e.message));
     api<Record<string, StallInsight>>("/api/admin/stalls/insights").then(setInsights).catch((e) => setError(e.message));
+    api<StallRanking[]>("/api/admin/stalls/rankings").then(setRankings).catch((e) => setError(e.message));
   }, []);
 
   useEffect(() => {
@@ -215,7 +225,7 @@ export default function AdminDashboard() {
     <Shell navItems={navItems} activeKey={tab} onNavigate={(k) => setTab(k as Tab)} roleLabel="Super Admin">
       {error && <div className="error-banner" role="alert">{error}</div>}
 
-      {tab === "overview" && <OverviewTab overview={overview} activity={activity} onNavigate={setTab} />}
+      {tab === "overview" && <OverviewTab overview={overview} activity={activity} rankings={rankings} onNavigate={setTab} />}
       {tab === "stalls" && (
         <StallsTab
           stalls={stalls}
@@ -333,10 +343,12 @@ function StudentsTab({ students, total }: { students: StudentRow[] | null; total
 function OverviewTab({
   overview,
   activity,
+  rankings,
   onNavigate,
 }: {
   overview: Overview | null;
   activity: ActivityItem[] | null;
+  rankings: StallRanking[] | null;
   onNavigate: (tab: Tab) => void;
 }) {
   const attentionItems = overview
@@ -481,6 +493,31 @@ function OverviewTab({
                 data={overview.categoryDistribution.map((c) => ({ label: c.category, value: c.quantity }))}
                 emptyText="No orders placed yet today."
               />
+            )}
+          </div>
+
+          <div className="card">
+            <div className="card-title row" style={{ gap: "0.35rem" }}>
+              <Star size={12} strokeWidth={2.5} /> Campus stall rankings
+            </div>
+            {!rankings ? (
+              <div className="stack" style={{ marginTop: "0.4rem" }}>
+                <Skeleton height={14} />
+                <Skeleton height={14} width="70%" />
+              </div>
+            ) : rankings.length === 0 ? (
+              <div className="muted" style={{ padding: "0.4rem 0" }}>No ratings yet.</div>
+            ) : (
+              <div className="stack" style={{ marginTop: "0.4rem" }}>
+                {rankings.slice(0, 8).map((r, i) => (
+                  <div key={r.stallId} className="row between" style={{ fontSize: "0.85rem" }}>
+                    <span>
+                      #{i + 1} {r.name} <span className="muted">· {r.block}</span>
+                    </span>
+                    <span className="muted">⭐ {r.average} ({r.count})</span>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         </div>

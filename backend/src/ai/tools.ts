@@ -205,6 +205,21 @@ export interface SessionState {
   // model. Cleared the moment the student types something that doesn't match
   // an expected option, so free-text search always still works.
   browseFlow?: BrowseFlowState;
+  // Present after an order is marked completed, while the post-order rating
+  // prompt is awaiting a reply (stars -> optional reason -> optional
+  // comment). Same deterministic-wizard rationale as smartFlow/browseFlow.
+  // Cleared and falls through to normal handling the moment a reply doesn't
+  // match the current step, so an ignored prompt never traps the student.
+  ratingFlow?: RatingFlowState;
+}
+
+export interface RatingFlowState {
+  orderId: string;
+  stallId: string;
+  stallName: string;
+  stage: "awaiting_stars" | "awaiting_reason" | "awaiting_comment";
+  stars?: number;
+  reason?: string;
 }
 
 export type BrowseScreen =

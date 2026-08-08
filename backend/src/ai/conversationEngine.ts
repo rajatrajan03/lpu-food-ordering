@@ -9,11 +9,13 @@ import {
   type SmartFlowState,
   type UsualItemRef,
 } from "./tools";
+import type { RatingReason } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import * as menuService from "../services/menuService";
 import * as orderService from "../services/orderService";
 import * as studentService from "../services/studentService";
 import * as preferenceService from "../services/preferenceService";
+import * as ratingService from "../services/ratingService";
 import { sendWhatsAppText, sendWhatsAppButtons, sendWhatsAppList, type ListRow } from "../whatsapp/client";
 import {
   HOME_BUTTON_IDS,
@@ -68,7 +70,8 @@ Rules:
 - BE EXTREMELY BRIEF. This is a WhatsApp chat, not a report: 1–3 short lines of text plus a list when needed, nothing more. Never restate the student's question back to them, never add filler like "let me know if you need anything else" or "just say the word", never explain what you're about to do — just do it and show the result. Never use markdown tables — use a short numbered list instead. For a list of results, show at most 4–5 items and stop; do not add a trailing invitation sentence beyond one short "more?" style prompt if truly needed.
 - A "Known references" block may follow with name -> id lookups from earlier in this conversation. Use those ids directly instead of calling a tool again for something you already looked up — but never invent an id that isn't listed there or in a tool result. This also covers references like "the first one" or "that one", or a bare number like "2" after you've numbered a list — resolve them yourself from what you just listed, don't ask the student to repeat themselves.
 - NEVER show raw database ids to the student, and NEVER repeat or summarize the "Known references" block back in your reply — that block is for your own internal use only, the student must never see it or anything resembling it. When listing stalls or items, number them (1, 2, 3...) and show just the name/area/price; the student will reply by number or name, and you resolve that yourself using the Known references or the numbered list you just sent.
-- You only have student-facing tools. Never claim to change stall settings, menus, or other students' orders — that's outside what you can do here.`;
+- You only have student-facing tools. Never claim to change stall settings, menus, or other students' orders — that's outside what you can do here.
+- list_stalls results may include a rating/ratingCount for a stall — if present, you may mention it briefly (e.g. "⭐ 4.6 (324 Ratings)") when listing stalls. Never mention a rating if it's absent (no ratings yet). Never discuss, invent, or offer to show individual reviews or comments — students only ever see the aggregate number.`;
 
 // Gemini's free tier has far more headroom than Groq's did, so this can be
 // generous — a multi-step flow (look up stall -> search its menu -> resolve
@@ -121,6 +124,7 @@ export function getSessionState(raw: unknown): SessionState {
     knownSlots: s.knownSlots ?? {},
     smartFlow: s.smartFlow,
     browseFlow: s.browseFlow,
+    ratingFlow: s.ratingFlow,
   };
 }
 
@@ -373,6 +377,101 @@ async function handleSmartFlowStep(whatsappNumber: string, text: string, session
   session.smartFlow = undefined;
 }
 
+// ---------------------------------------------------------------------------
+// Post-order Rating Flow — same deterministic-wizard rationale as smartFlow:
+// stars/reasons must be exact tappable options, not left to the AI loop. The
+// proactive trigger (sent right after an order is marked completed) lives in
+// ai/ratingFlow.ts to avoid a circular import; step-handling stays here,
+// mirroring how handleSmartFlowStep is inline rather than in its own file.
+// ---------------------------------------------------------------------------
+
+const RATE_STARS_PREFIX = "rate_stars:"; // duplicated in ai/ratingFlow.ts — small, deliberate duplication (see formatSlotTime/ORDER_STATUS_EMOJI precedent)
+const RATE_REASON_PREFIX = "rate_reason:";
+
+const RATING_REASONS: { value: RatingReason; label: string }[] = [
+  { value: "food_quality", label: "🍔 Food Quality" },
+  { value: "service", label: "👨‍🍳 Service" },
+  { value: "pickup_delay", label: "⏱ Pickup Delay" },
+  { value: "wrong_order", label: "📦 Wrong Order" },
+  { value: "other", label: "💬 Other" },
+];
+
+/**
+ * Advances the rating wizard by one step. Returns false (and clears
+ * session.ratingFlow) the moment the reply doesn't match the current step,
+ * so an ignored/unrelated message falls through to normal handling instead
+ * of trapping the student.
+ */
+async function handleRatingFlowStep(
+  whatsappNumber: string,
+  text: string,
+  interactiveId: string | undefined,
+  studentId: string,
+  session: SessionState,
+): Promise<boolean> {
+  const flow = session.ratingFlow!;
+
+  if (flow.stage === "awaiting_stars") {
+    if (!interactiveId?.startsWith(RATE_STARS_PREFIX)) {
+      session.ratingFlow = undefined;
+      return false;
+    }
+    const stars = Number(interactiveId.slice(RATE_STARS_PREFIX.length));
+    if (stars >= 4) {
+      try {
+        await ratingService.submitRating({ orderId: flow.orderId, studentId, stars });
+      } catch (err) {
+        console.error("Failed to submit rating:", err);
+      }
+      await sendWhatsAppText(whatsappNumber, "Thanks for your feedback! 🙏");
+      session.ratingFlow = undefined;
+      return true;
+    }
+    flow.stars = stars;
+    flow.stage = "awaiting_reason";
+    await sendWhatsAppList(
+      whatsappNumber,
+      "What went wrong?",
+      "Choose reason",
+      RATING_REASONS.map((r) => ({ id: `${RATE_REASON_PREFIX}${r.value}`, title: r.label })),
+    );
+    return true;
+  }
+
+  if (flow.stage === "awaiting_reason") {
+    if (!interactiveId?.startsWith(RATE_REASON_PREFIX)) {
+      session.ratingFlow = undefined;
+      return false;
+    }
+    flow.reason = interactiveId.slice(RATE_REASON_PREFIX.length);
+    flow.stage = "awaiting_comment";
+    await sendWhatsAppText(whatsappNumber, 'Want to add any details? Reply with a short comment, or type "skip".');
+    return true;
+  }
+
+  if (flow.stage === "awaiting_comment") {
+    const trimmed = text.trim();
+    const comment = trimmed.length === 0 || trimmed.toLowerCase() === "skip" ? undefined : trimmed;
+    try {
+      await ratingService.submitRating({
+        orderId: flow.orderId,
+        studentId,
+        stars: flow.stars!,
+        reason: flow.reason as RatingReason,
+        comment,
+      });
+    } catch (err) {
+      console.error("Failed to submit rating:", err);
+    }
+    await sendWhatsAppText(whatsappNumber, "Thanks for letting us know — we'll pass this along. 🙏");
+    session.ratingFlow = undefined;
+    return true;
+  }
+
+  session.ratingFlow = undefined;
+  return false;
+}
+
 async function executeTool(
   name: string,
   args: Record<string, unknown>,
@@ -388,11 +487,15 @@ async function executeTool(
         offset: (args.offset as number | undefined) ?? 0,
       });
       session.knownStalls = rememberNames(session.knownStalls, stalls.map((s) => [s.name, s.id]));
+      const ratings = await ratingService.getStallRatingSummaries(stalls.map((s) => s.id));
       // Trimmed to just what the model needs to talk about a stall — the full
       // Prisma row (openingHours, pickupNote, createdAt, status...) was the
       // single biggest contributor to blowing Groq's free-tier token budget,
       // especially on an unscoped "browse everything" call.
-      return stalls.map((s) => ({ id: s.id, name: s.name, area: s.area, block: s.block }));
+      return stalls.map((s) => {
+        const r = ratings.get(s.id);
+        return { id: s.id, name: s.name, area: s.area, block: s.block, rating: r?.average, ratingCount: r?.count };
+      });
     }
 
     case "search_menu": {
@@ -665,6 +768,15 @@ export async function handleIncomingMessage(
     await prisma.student.update({ where: { id: student.id }, data: { sessionState: session as unknown as object } });
     return null;
   };
+
+  // A pending rating prompt takes top priority — it's usually the very next
+  // message after an order-completion push, and stars/reasons only make
+  // sense as a reply to that prompt. Falls through to normal handling below
+  // if the reply doesn't match (handler already cleared ratingFlow).
+  if (session.ratingFlow) {
+    const handled = await handleRatingFlowStep(whatsappNumber, text, interactiveId, student.id, session);
+    if (handled) return persistAndReturn();
+  }
 
   // A smart-suggestion wizard step in progress takes priority over
   // everything else — "yes"/an area name/a stall name only make sense in
