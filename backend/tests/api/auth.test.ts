@@ -76,15 +76,19 @@ describe("Role authorization / permission isolation across owner and admin route
 });
 
 describe("POST /api/auth/admin/login + OTP flow", () => {
-  it("issues an OTP requirement instead of a token on correct password", async () => {
+  // Super Admin OTP is temporarily disabled (ADMIN_OTP_ENABLED = false in
+  // routes/auth.ts, 2026-08-09 — no email-sending service configured yet
+  // to offer as an alternative to WhatsApp delivery) — correct credentials
+  // return a token directly, same shape as owner login. Once OTP is
+  // switched back on, this test's 200 branch should assert
+  // `otpRequired`/`adminId` instead (still no WhatsApp number on the
+  // fixture admin, so it would 400 — see the comment that used to be here).
+  it("returns a token directly on correct password (OTP currently disabled)", async () => {
     const { admin, password } = await ctx.createAdmin();
-    // no whatsappNumber on the fixture admin — issuing the OTP will fail with 400, which is itself the correct, expected behavior for an admin with no WhatsApp number on file.
     const res = await request(app).post("/api/auth/admin/login").send({ email: admin.email, password });
-    expect([200, 400]).toContain(res.status);
-    if (res.status === 200) {
-      expect(res.body.otpRequired).toBe(true);
-      expect(res.body.adminId).toBe(admin.id);
-    }
+    expect(res.status).toBe(200);
+    expect(typeof res.body.token).toBe("string");
+    expect(res.body.name).toBe(admin.name);
   });
 
   it("401s on wrong admin password", async () => {

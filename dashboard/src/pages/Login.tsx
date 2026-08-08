@@ -91,8 +91,18 @@ export default function Login() {
   const googleButtonRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
 
-  async function completeAdminLogin(otpRequired: { otpRequired: true; adminId: string }) {
-    setPendingAdminId(otpRequired.adminId);
+  // Admin login/google can respond either way depending on whether the
+  // backend has OTP enabled (currently disabled — see backend's
+  // ADMIN_OTP_ENABLED) — handling both here means this component doesn't
+  // need another change whenever that gets flipped back on.
+  type AdminLoginResponse = { token: string; name: string } | { otpRequired: true; adminId: string };
+  function handleAdminLoginResponse(data: AdminLoginResponse) {
+    if ("token" in data) {
+      setAuth(data.token, "super_admin", data.name);
+      navigate("/admin");
+    } else {
+      setPendingAdminId(data.adminId);
+    }
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -109,11 +119,11 @@ export default function Login() {
         navigate("/owner");
         return;
       }
-      const data = await api<{ otpRequired: true; adminId: string }>("/api/auth/admin/login", {
+      const data = await api<AdminLoginResponse>("/api/auth/admin/login", {
         method: "POST",
         body: { email: identifier, password },
       });
-      await completeAdminLogin(data);
+      handleAdminLoginResponse(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed.");
     } finally {
@@ -134,11 +144,11 @@ export default function Login() {
         navigate("/owner");
         return;
       }
-      const data = await api<{ otpRequired: true; adminId: string }>("/api/auth/admin/google", {
+      const data = await api<AdminLoginResponse>("/api/auth/admin/google", {
         method: "POST",
         body: { credential },
       });
-      await completeAdminLogin(data);
+      handleAdminLoginResponse(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Google sign-in failed.");
     } finally {

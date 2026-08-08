@@ -34,6 +34,13 @@ async function verifyGoogleCredential(credential: string): Promise<{ email: stri
 const OTP_TTL_MS = 5 * 60 * 1000;
 const googleClient = process.env.GOOGLE_CLIENT_ID ? new OAuth2Client(process.env.GOOGLE_CLIENT_ID) : null;
 
+// Temporarily disabled at the user's request (2026-08-09) — OTP delivery
+// goes over WhatsApp only, and there's no email-sending service configured
+// yet to offer as an alternative. Flip this back to `true` once one is
+// wired up (see issueOtp) to restore Super Admin 2FA. Every other admin
+// login rule (email+password, Google sign-in) is unchanged.
+const ADMIN_OTP_ENABLED = false;
+
 authRouter.post(
   "/owner/login",
   authLimiter,
@@ -109,6 +116,12 @@ authRouter.post(
       return res.status(401).json({ error: "Incorrect email or password." });
     }
 
+    if (!ADMIN_OTP_ENABLED) {
+      const token = signToken({ id: admin.id, role: "super_admin" });
+      auditLog("auth.admin_login_succeeded", { adminId: admin.id, ip: req.ip, otpSkipped: true });
+      return res.json({ token, name: admin.name });
+    }
+
     try {
       await issueOtp(admin.id, admin.whatsappNumber);
     } catch (err) {
@@ -138,6 +151,12 @@ authRouter.post(
 
     if (admin.googleId !== verified.googleId) {
       await prisma.superAdmin.update({ where: { id: admin.id }, data: { googleId: verified.googleId } });
+    }
+
+    if (!ADMIN_OTP_ENABLED) {
+      const token = signToken({ id: admin.id, role: "super_admin" });
+      auditLog("auth.admin_login_succeeded", { adminId: admin.id, ip: req.ip, via: "google", otpSkipped: true });
+      return res.json({ token, name: admin.name });
     }
 
     try {
