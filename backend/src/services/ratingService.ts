@@ -96,6 +96,32 @@ export async function getStallRatingDetail(stallId: string) {
   };
 }
 
+/**
+ * Daily average-rating buckets for a trend chart — pass a stallId to scope
+ * to one stall (Owner Analytics) or omit it for a campus-wide trend (Admin
+ * Analytics). Bucketed in JS rather than a DB date_trunc so it stays
+ * portable and consistent with how every other range query in this app
+ * loads rows and reduces in memory.
+ */
+export async function getRatingTrend(range: { since: Date; until: Date; stallId?: string }) {
+  const ratings = await prisma.rating.findMany({
+    where: { createdAt: { gte: range.since, lt: range.until }, ...(range.stallId ? { stallId: range.stallId } : {}) },
+    select: { stars: true, createdAt: true },
+    orderBy: { createdAt: "asc" },
+  });
+  const byDay = new Map<string, { sum: number; count: number }>();
+  for (const r of ratings) {
+    const day = r.createdAt.toISOString().slice(0, 10);
+    const bucket = byDay.get(day) ?? { sum: 0, count: 0 };
+    bucket.sum += r.stars;
+    bucket.count += 1;
+    byDay.set(day, bucket);
+  }
+  return [...byDay.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([day, b]) => ({ day, average: Math.round((b.sum / b.count) * 10) / 10, count: b.count }));
+}
+
 /** Campus-wide stall rankings for the Admin Dashboard — average + total only, no comments or reasons. */
 export async function getStallRankings(limit = 50) {
   const groups = await prisma.rating.groupBy({ by: ["stallId"], _avg: { stars: true }, _count: true });

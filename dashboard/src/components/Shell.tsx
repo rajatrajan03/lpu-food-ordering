@@ -525,3 +525,75 @@ export function useUndoToast(durationMs = 5000) {
 
   return { show, node };
 }
+
+/** Simple horizontal bar chart — same visual pattern as AdminDashboard's original category/food bars, lifted here so Analytics can reuse it instead of re-implementing. */
+export function BarChart({
+  data,
+  emptyText = "No data for this range.",
+  valueFormatter,
+}: {
+  data: { label: string; value: number }[];
+  emptyText?: string;
+  valueFormatter?: (v: number) => string;
+}) {
+  if (data.length === 0) return <div className="muted" style={{ padding: "0.4rem 0" }}>{emptyText}</div>;
+  const max = Math.max(...data.map((d) => d.value));
+  return (
+    <div className="bar-list">
+      {data.map((d, i) => (
+        <div className="bar-row" key={`${d.label}-${i}`}>
+          <span className="bar-label" title={d.label}>{d.label}</span>
+          <div className="bar-track">
+            <motion.div
+              className="bar-fill"
+              initial={{ width: 0 }}
+              animate={{ width: `${max === 0 ? 0 : (d.value / max) * 100}%` }}
+              transition={{ duration: 0.5, ease: "easeOut" }}
+            />
+          </div>
+          <span className="bar-value">{valueFormatter ? valueFormatter(d.value) : d.value}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Lightweight SVG line/sparkline for a day-bucketed trend — no charting library, self-contained and themeable via CSS vars. */
+export function TrendLine({
+  data,
+  emptyText = "No data for this range.",
+  valueFormatter,
+  height = 140,
+}: {
+  data: { day: string; value: number }[];
+  emptyText?: string;
+  valueFormatter?: (v: number) => string;
+  height?: number;
+}) {
+  if (data.length === 0) return <div className="muted" style={{ padding: "0.4rem 0" }}>{emptyText}</div>;
+  const width = 600;
+  const pad = 24;
+  const max = Math.max(...data.map((d) => d.value), 1);
+  const min = 0;
+  const stepX = data.length > 1 ? (width - pad * 2) / (data.length - 1) : 0;
+  const points = data.map((d, i) => {
+    const x = pad + i * stepX;
+    const y = pad + (1 - (d.value - min) / (max - min || 1)) * (height - pad * 2);
+    return { x, y, ...d };
+  });
+  const path = points.map((p, i) => `${i === 0 ? "M" : "L"}${p.x},${p.y}`).join(" ");
+  const area = `${path} L${points[points.length - 1].x},${height - pad} L${points[0].x},${height - pad} Z`;
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} style={{ width: "100%", height }} preserveAspectRatio="none">
+      <path d={area} fill="var(--accent)" opacity={0.12} />
+      <path d={path} fill="none" stroke="var(--accent)" strokeWidth={2} />
+      {points.map((p, i) => (
+        <g key={i}>
+          <circle cx={p.x} cy={p.y} r={3} fill="var(--accent)" />
+          <title>{`${p.day}: ${valueFormatter ? valueFormatter(p.value) : p.value}`}</title>
+        </g>
+      ))}
+    </svg>
+  );
+}

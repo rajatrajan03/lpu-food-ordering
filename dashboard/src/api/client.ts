@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:3000";
+export const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:3000";
 
 export type Role = "stall_owner" | "super_admin";
 
@@ -48,4 +48,25 @@ export async function api<T = unknown>(
     await new Promise((r) => setTimeout(r, 400));
     return request<T>(path, options);
   }
+}
+
+/** Downloads a binary export (CSV/Excel/PDF) — separate from `api()` since those responses aren't JSON. */
+export async function downloadFile(path: string, filename: string): Promise<void> {
+  const auth = getAuth();
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: auth ? { Authorization: `Bearer ${auth.token}` } : {},
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(data?.error ?? `Export failed (${res.status})`);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }

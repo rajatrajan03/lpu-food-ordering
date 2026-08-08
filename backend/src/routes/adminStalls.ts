@@ -9,6 +9,8 @@ import { listStudents, countStudents } from "../services/studentService";
 import * as ratingService from "../services/ratingService";
 import * as offerService from "../services/offerService";
 import { askAdminAssistant } from "../services/businessAssistantService";
+import { getAdminAnalytics, resolveDateRange, toAdminReport, AnalyticsError } from "../services/advancedAnalyticsService";
+import { reportToCsv, reportToXlsx, reportToPdf } from "../services/exportService";
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth("super_admin"));
@@ -70,6 +72,56 @@ adminRouter.post(
   asyncHandler(async (req, res) => {
     const offer = await offerService.adminSetOfferActive(req.params.offerId, req.params.action === "activate");
     res.json(offer);
+  }),
+);
+
+// ---- Advanced Analytics (campus-wide) ----
+
+function parseAdminPeriodQuery(req: import("express").Request) {
+  const period = (req.query.period as string) ?? "today";
+  if (!["today", "week", "month", "custom"].includes(period)) {
+    throw new AnalyticsError("period must be one of today, week, month, custom.");
+  }
+  return resolveDateRange(period as "today" | "week" | "month" | "custom", req.query.from as string, req.query.to as string);
+}
+
+adminRouter.get(
+  "/analytics",
+  asyncHandler(async (req, res) => {
+    try {
+      res.json(await getAdminAnalytics(parseAdminPeriodQuery(req)));
+    } catch (err) {
+      if (err instanceof AnalyticsError) return res.status(400).json({ error: err.message });
+      throw err;
+    }
+  }),
+);
+
+adminRouter.get(
+  "/analytics/export",
+  asyncHandler(async (req, res) => {
+    const format = (req.query.format as string) ?? "csv";
+    if (!["csv", "xlsx", "pdf"].includes(format)) return res.status(400).json({ error: "format must be csv, xlsx, or pdf." });
+    try {
+      const range = parseAdminPeriodQuery(req);
+      const report = toAdminReport(await getAdminAnalytics(range));
+      const filenameBase = `campus-analytics-${range.period}`;
+      if (format === "csv") {
+        res.set("Content-Type", "text/csv").set("Content-Disposition", `attachment; filename="${filenameBase}.csv"`);
+        return res.send(reportToCsv(report));
+      }
+      if (format === "xlsx") {
+        res
+          .set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+          .set("Content-Disposition", `attachment; filename="${filenameBase}.xlsx"`);
+        return res.send(reportToXlsx(report));
+      }
+      res.set("Content-Type", "application/pdf").set("Content-Disposition", `attachment; filename="${filenameBase}.pdf"`);
+      res.send(await reportToPdf(report));
+    } catch (err) {
+      if (err instanceof AnalyticsError) return res.status(400).json({ error: err.message });
+      throw err;
+    }
   }),
 );
 

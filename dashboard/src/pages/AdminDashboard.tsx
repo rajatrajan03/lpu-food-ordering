@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   Activity,
   AlertTriangle,
+  BarChart3,
   Bot,
   CheckCircle2,
   Eye,
@@ -29,8 +30,8 @@ import {
   UtensilsCrossed,
   X,
 } from "lucide-react";
-import { api } from "../api/client";
-import { AnimatedNumber, EmptyState, PageHead, Shell, Skeleton, StatCard, relativeTime, type NavItem } from "../components/Shell";
+import { api, downloadFile } from "../api/client";
+import { AnimatedNumber, BarChart, EmptyState, PageHead, Shell, Skeleton, StatCard, TrendLine, relativeTime, type NavItem } from "../components/Shell";
 
 interface Stall {
   id: string;
@@ -102,13 +103,15 @@ const NAV_ITEMS: NavItem[] = [
   { key: "overview", label: "Overview", icon: LayoutGrid },
   { key: "stalls", label: "Stalls", icon: Store },
   { key: "offers", label: "Offers", icon: Tag },
+  { key: "analytics", label: "Analytics", icon: BarChart3 },
   { key: "ai", label: "Ask AI", icon: Bot },
   { key: "categories", label: "Category review", icon: Tags },
   { key: "owners", label: "Assign owners", icon: KeyRound },
   { key: "students", label: "Students", icon: Users },
 ];
 
-type Tab = "overview" | "stalls" | "offers" | "ai" | "categories" | "owners" | "students";
+type Tab = "overview" | "stalls" | "offers" | "analytics" | "ai" | "categories" | "owners" | "students";
+type Period = "today" | "week" | "month" | "custom";
 
 const ADMIN_AI_SUGGESTIONS = [
   "Which stall has the highest ratings?",
@@ -273,6 +276,7 @@ export default function AdminDashboard() {
 
       {tab === "overview" && <OverviewTab overview={overview} activity={activity} rankings={rankings} onNavigate={setTab} />}
       {tab === "offers" && <AdminOffersTab />}
+      {tab === "analytics" && <AdminAnalyticsTab />}
       {tab === "ai" && (
         <AskAiPanel
           title="Ask AI about campus operations"
@@ -300,6 +304,211 @@ export default function AdminDashboard() {
       {tab === "owners" && <AssignOwnerForm stalls={stalls ?? []} onAssigned={refreshAll} />}
       {tab === "students" && <StudentsTab students={students} total={studentTotal} />}
     </Shell>
+  );
+}
+
+interface AdminAnalytics {
+  range: { period: Period; since: string; until: string };
+  campusRevenue: number;
+  campusOrders: number;
+  activeStalls: number;
+  stallRankingsByRating: { stallId: string; name: string; block: string; average: number; count: number }[];
+  lowestRatedStalls: { stallId: string; name: string; block: string; average: number; count: number }[];
+  highestSlaViolationStalls: { stallId: string; name: string; block: string; revenue: number; orders: number; slaViolations: number; noShows: number; rating: number | null }[];
+  peakCampusHours: { hour: number; count: number }[];
+  mostPopularBlocks: { block: string; revenue: number; orders: number }[];
+  revenueTrend: { day: string; revenue: number; orders: number }[];
+  campusRatingTrend: { day: string; average: number; count: number }[];
+  offerPerformance: { id: string; name: string; stallName: string; usageCount: number; totalDiscountGiven: number }[];
+  stallComparison: { stallId: string; name: string; block: string; revenue: number; orders: number; rating: number | null }[];
+}
+
+function adminHourLabel(utcHour: number): string {
+  const istHour = Math.floor((utcHour * 60 + 330) / 60) % 24;
+  const period = istHour < 12 ? "AM" : "PM";
+  const display = istHour % 12 === 0 ? 12 : istHour % 12;
+  return `${display}${period}`;
+}
+
+function AdminPeriodPicker({
+  period,
+  setPeriod,
+  from,
+  setFrom,
+  to,
+  setTo,
+}: {
+  period: Period;
+  setPeriod: (p: Period) => void;
+  from: string;
+  setFrom: (v: string) => void;
+  to: string;
+  setTo: (v: string) => void;
+}) {
+  return (
+    <div className="row" style={{ gap: "0.5rem", flexWrap: "wrap" }}>
+      {(["today", "week", "month", "custom"] as Period[]).map((p) => (
+        <button key={p} className={period === p ? "primary small" : "ghost small"} onClick={() => setPeriod(p)}>
+          {p === "today" ? "Today" : p === "week" ? "Week" : p === "month" ? "Month" : "Custom"}
+        </button>
+      ))}
+      {period === "custom" && (
+        <>
+          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} style={{ width: "auto" }} />
+          <input type="date" value={to} onChange={(e) => setTo(e.target.value)} style={{ width: "auto" }} />
+        </>
+      )}
+    </div>
+  );
+}
+
+function AdminExportButtons({ onExport }: { onExport: (format: "csv" | "xlsx" | "pdf") => void }) {
+  return (
+    <div className="row" style={{ gap: "0.4rem" }}>
+      <button className="ghost small" onClick={() => onExport("csv")}>Export CSV</button>
+      <button className="ghost small" onClick={() => onExport("xlsx")}>Export Excel</button>
+      <button className="ghost small" onClick={() => onExport("pdf")}>Export PDF</button>
+    </div>
+  );
+}
+
+function AdminAnalyticsTab() {
+  const [period, setPeriod] = useState<Period>("today");
+  const [from, setFrom] = useState(() => new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10));
+  const [to, setTo] = useState(() => new Date().toISOString().slice(0, 10));
+  const [data, setData] = useState<AdminAnalytics | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [compareA, setCompareA] = useState("");
+  const [compareB, setCompareB] = useState("");
+
+  const query = period === "custom" ? `period=custom&from=${from}&to=${to}` : `period=${period}`;
+
+  useEffect(() => {
+    if (period === "custom" && (!from || !to)) return;
+    setData(null);
+    api<AdminAnalytics>(`/api/admin/analytics?${query}`).then(setData).catch((e) => setError(e.message));
+  }, [query, period, from, to]);
+
+  async function handleExport(format: "csv" | "xlsx" | "pdf") {
+    try {
+      await downloadFile(`/api/admin/analytics/export?${query}&format=${format}`, `campus-analytics.${format}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Export failed.");
+    }
+  }
+
+  const stallA = data?.stallComparison.find((s) => s.stallId === compareA);
+  const stallB = data?.stallComparison.find((s) => s.stallId === compareB);
+
+  return (
+    <>
+      <div className="page-hero">
+        <div className="page-hero-row">
+          <PageHead title="Analytics" subtitle="Campus-wide performance across every stall." />
+          <AdminExportButtons onExport={handleExport} />
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: "1rem" }}>
+        <AdminPeriodPicker period={period} setPeriod={setPeriod} from={from} setFrom={setFrom} to={to} setTo={setTo} />
+      </div>
+
+      {error && <div className="error-banner" role="alert">{error}</div>}
+
+      <div className="stat-row">
+        <StatCard icon={IndianRupee} label="Campus revenue" tone="success" value={data ? <AnimatedNumber value={data.campusRevenue} prefix="₹" /> : <Skeleton width={60} height={28} />} />
+        <StatCard icon={Receipt} label="Campus orders" tone="accent" value={data ? data.campusOrders : <Skeleton width={32} height={28} />} />
+        <StatCard icon={Store} label="Active stalls" tone="info" value={data ? data.activeStalls : <Skeleton width={32} height={28} />} />
+      </div>
+
+      <div className="overview-grid">
+        <div className="stack">
+          <div className="card">
+            <div className="card-title">Revenue trend</div>
+            <TrendLine data={data?.revenueTrend.map((d) => ({ day: d.day, value: d.revenue })) ?? []} valueFormatter={(v) => `₹${v}`} />
+          </div>
+          <div className="card">
+            <div className="card-title">Peak campus hours</div>
+            <BarChart data={data?.peakCampusHours.map((h) => ({ label: adminHourLabel(h.hour), value: h.count })) ?? []} />
+          </div>
+          <div className="card">
+            <div className="card-title">Most popular blocks</div>
+            <BarChart data={data?.mostPopularBlocks.map((b) => ({ label: b.block, value: b.revenue })) ?? []} valueFormatter={(v) => `₹${v}`} />
+          </div>
+          <div className="card">
+            <div className="card-title">Campus rating trend</div>
+            <TrendLine data={data?.campusRatingTrend.map((r) => ({ day: r.day, value: r.average })) ?? []} valueFormatter={(v) => `${v}★`} />
+          </div>
+        </div>
+        <div className="stack">
+          <div className="card">
+            <div className="card-title">Stall rankings (by rating)</div>
+            <BarChart data={data?.stallRankingsByRating.slice(0, 8).map((s) => ({ label: s.name, value: s.average })) ?? []} valueFormatter={(v) => `${v}★`} />
+          </div>
+          <div className="card">
+            <div className="card-title">Lowest rated stalls</div>
+            {!data ? (
+              <Skeleton height={14} />
+            ) : data.lowestRatedStalls.length === 0 ? (
+              <div className="muted">No ratings yet.</div>
+            ) : (
+              <div className="stack">
+                {data.lowestRatedStalls.slice(0, 5).map((s) => (
+                  <div key={s.stallId} className="row between" style={{ fontSize: "0.85rem" }}>
+                    <span>{s.name} <span className="muted">· {s.block}</span></span>
+                    <span className="muted">⭐ {s.average} ({s.count})</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="card">
+            <div className="card-title">Highest SLA violations</div>
+            {!data ? (
+              <Skeleton height={14} />
+            ) : data.highestSlaViolationStalls.filter((s) => s.slaViolations > 0).length === 0 ? (
+              <div className="muted">No SLA violations in this range.</div>
+            ) : (
+              <BarChart
+                data={data.highestSlaViolationStalls.filter((s) => s.slaViolations > 0).slice(0, 8).map((s) => ({ label: s.name, value: s.slaViolations }))}
+              />
+            )}
+          </div>
+          <div className="card">
+            <div className="card-title">Offer performance</div>
+            <BarChart data={data?.offerPerformance.slice(0, 8).map((o) => ({ label: `${o.name} (${o.stallName})`, value: o.usageCount })) ?? []} />
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">Stall comparison</div>
+        <div className="row" style={{ gap: "0.6rem", marginTop: "0.5rem", flexWrap: "wrap" }}>
+          <select value={compareA} onChange={(e) => setCompareA(e.target.value)} style={{ width: "auto", minWidth: 180 }}>
+            <option value="">Choose stall A…</option>
+            {data?.stallComparison.map((s) => <option key={s.stallId} value={s.stallId}>{s.name}</option>)}
+          </select>
+          <select value={compareB} onChange={(e) => setCompareB(e.target.value)} style={{ width: "auto", minWidth: 180 }}>
+            <option value="">Choose stall B…</option>
+            {data?.stallComparison.map((s) => <option key={s.stallId} value={s.stallId}>{s.name}</option>)}
+          </select>
+        </div>
+        {stallA && stallB && (
+          <div className="table-scroll" style={{ marginTop: "0.8rem" }}>
+            <table>
+              <thead>
+                <tr><th></th><th>{stallA.name}</th><th>{stallB.name}</th></tr>
+              </thead>
+              <tbody>
+                <tr><td className="muted">Revenue</td><td>₹{stallA.revenue}</td><td>₹{stallB.revenue}</td></tr>
+                <tr><td className="muted">Orders</td><td>{stallA.orders}</td><td>{stallB.orders}</td></tr>
+                <tr><td className="muted">Rating</td><td>{stallA.rating ?? "—"}</td><td>{stallB.rating ?? "—"}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </>
   );
 }
 

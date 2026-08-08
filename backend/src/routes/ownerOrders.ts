@@ -16,6 +16,8 @@ import { triggerRatingPrompt } from "../ai/ratingFlow";
 import * as ratingService from "../services/ratingService";
 import * as offerService from "../services/offerService";
 import { askOwnerAssistant, BusinessAssistantError } from "../services/businessAssistantService";
+import { getOwnerAnalytics, resolveDateRange, toOwnerReport, AnalyticsError } from "../services/advancedAnalyticsService";
+import { reportToCsv, reportToXlsx, reportToPdf } from "../services/exportService";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -277,6 +279,65 @@ ownerOrdersRouter.post(
       res.json(offer);
     } catch (err) {
       if (err instanceof offerService.OfferError) return res.status(404).json({ error: err.message });
+      throw err;
+    }
+  }),
+);
+
+// ---- Advanced Analytics ----
+
+function parsePeriodQuery(req: import("express").Request) {
+  const period = (req.query.period as string) ?? "today";
+  if (!["today", "week", "month", "custom"].includes(period)) {
+    throw new AnalyticsError("period must be one of today, week, month, custom.");
+  }
+  return resolveDateRange(period as "today" | "week" | "month" | "custom", req.query.from as string, req.query.to as string);
+}
+
+ownerOrdersRouter.get(
+  "/stalls/:stallId/analytics",
+  asyncHandler(async (req, res) => {
+    const { stallId } = req.params;
+    if (!(await assertOwnsStall(req.auth!.id, stallId))) {
+      return res.status(403).json({ error: "You do not manage this stall." });
+    }
+    try {
+      const range = parsePeriodQuery(req);
+      res.json(await getOwnerAnalytics(stallId, range));
+    } catch (err) {
+      if (err instanceof AnalyticsError) return res.status(400).json({ error: err.message });
+      throw err;
+    }
+  }),
+);
+
+ownerOrdersRouter.get(
+  "/stalls/:stallId/analytics/export",
+  asyncHandler(async (req, res) => {
+    const { stallId } = req.params;
+    if (!(await assertOwnsStall(req.auth!.id, stallId))) {
+      return res.status(403).json({ error: "You do not manage this stall." });
+    }
+    const format = (req.query.format as string) ?? "csv";
+    if (!["csv", "xlsx", "pdf"].includes(format)) return res.status(400).json({ error: "format must be csv, xlsx, or pdf." });
+    try {
+      const range = parsePeriodQuery(req);
+      const report = toOwnerReport(await getOwnerAnalytics(stallId, range));
+      const filenameBase = `analytics-${stallId}-${range.period}`;
+      if (format === "csv") {
+        res.set("Content-Type", "text/csv").set("Content-Disposition", `attachment; filename="${filenameBase}.csv"`);
+        return res.send(reportToCsv(report));
+      }
+      if (format === "xlsx") {
+        res
+          .set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+          .set("Content-Disposition", `attachment; filename="${filenameBase}.xlsx"`);
+        return res.send(reportToXlsx(report));
+      }
+      res.set("Content-Type", "application/pdf").set("Content-Disposition", `attachment; filename="${filenameBase}.pdf"`);
+      res.send(await reportToPdf(report));
+    } catch (err) {
+      if (err instanceof AnalyticsError) return res.status(400).json({ error: err.message });
       throw err;
     }
   }),

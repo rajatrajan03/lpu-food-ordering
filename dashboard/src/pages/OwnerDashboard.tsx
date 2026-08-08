@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   Activity,
   AlertTriangle,
+  BarChart3,
   BellRing,
   Bot,
   CheckCircle2,
@@ -23,16 +24,19 @@ import {
   Trash2,
   TrendingUp,
   UserX,
+  Users,
   XCircle,
 } from "lucide-react";
-import { api } from "../api/client";
+import { api, downloadFile } from "../api/client";
 import {
   AnimatedNumber,
+  BarChart,
   EmptyState,
   PageHead,
   Shell,
   Skeleton,
   StatCard,
+  TrendLine,
   relativeTime,
   useUndoToast,
   type NavItem,
@@ -140,6 +144,7 @@ const URGENT_MINUTES = 10;
 const NAV_ITEMS: NavItem[] = [
   { key: "orders", label: "Orders", icon: Receipt },
   { key: "offers", label: "Offers", icon: Tag },
+  { key: "analytics", label: "Analytics", icon: BarChart3 },
   { key: "ai", label: "Ask AI", icon: Bot },
 ];
 
@@ -191,7 +196,7 @@ const OFFER_TYPE_LABEL: Record<string, string> = {
 };
 
 export default function OwnerDashboard() {
-  const [tab, setTab] = useState<"orders" | "offers" | "ai">("orders");
+  const [tab, setTab] = useState<"orders" | "offers" | "analytics" | "ai">("orders");
   const [stalls, setStalls] = useState<Stall[] | null>(null);
   const [stallId, setStallId] = useState<string | null>(null);
   const [orders, setOrders] = useState<Order[] | null>(null);
@@ -445,10 +450,12 @@ export default function OwnerDashboard() {
   }, [historyOrders, historyCompleted]);
 
   return (
-    <Shell navItems={NAV_ITEMS} activeKey={tab} onNavigate={(k) => setTab(k as "orders" | "offers" | "ai")} roleLabel="Stall Owner">
+    <Shell navItems={NAV_ITEMS} activeKey={tab} onNavigate={(k) => setTab(k as "orders" | "offers" | "analytics" | "ai")} roleLabel="Stall Owner">
       {error && <div className="error-banner" role="alert">{error}</div>}
 
-      {tab === "ai" ? (
+      {tab === "analytics" ? (
+        <OwnerAnalyticsTab stallId={stallId} stallName={currentStall?.name} />
+      ) : tab === "ai" ? (
         <AskAiPanel
           title="Ask AI about your stall"
           subtitle={currentStall ? `Answers use only ${currentStall.name}'s own data.` : undefined}
@@ -1043,6 +1050,198 @@ function OrderCard({
         </div>
       )}
     </motion.div>
+  );
+}
+
+type Period = "today" | "week" | "month" | "custom";
+
+interface OwnerAnalytics {
+  stall: { name: string; block: string };
+  range: { period: Period; since: string; until: string };
+  revenue: number;
+  totalOrders: number;
+  avgOrderValue: number;
+  newCustomers: number;
+  returningCustomers: number;
+  repeatCustomerRatePct: number;
+  bestSellingItems: { name: string; qty: number; revenue: number }[];
+  worstSellingItems: { name: string; qty: number; revenue: number }[];
+  categoryPerformance: { category: string; qty: number; revenue: number }[];
+  comboPerformance: { id: string; name: string; usageCount: number; totalDiscountGiven: number }[];
+  peakHours: { hour: number; count: number }[];
+  sla: {
+    avgAcceptanceSeconds: number | null;
+    missedAcceptanceDeadlines: number;
+    slaViolations: number;
+    onTimePreparationRate: number | null;
+    customerNoShows: number;
+  };
+  avgPrepMinutes: number | null;
+  cancellationRatePct: number;
+  noShowRatePct: number;
+  ratingTrend: { day: string; average: number; count: number }[];
+  rating: { average: number | null; count: number };
+  revenueTrend: { day: string; revenue: number; orders: number }[];
+  offers: {
+    performance: { id: string; name: string; usageCount: number; totalDiscountGiven: number }[];
+    revenueGeneratedByOffers: number;
+    discountGiven: number;
+    bestPerformingOffer: { name: string; usageCount: number } | null;
+  };
+}
+
+function hourLabel(utcHour: number): string {
+  // Owner/admin analytics buckets by UTC hour internally; display converts to IST (UTC+5:30) for readability.
+  const istHour = Math.floor((utcHour * 60 + 330) / 60) % 24;
+  const period = istHour < 12 ? "AM" : "PM";
+  const display = istHour % 12 === 0 ? 12 : istHour % 12;
+  return `${display}${period}`;
+}
+
+function PeriodPicker({
+  period,
+  setPeriod,
+  from,
+  setFrom,
+  to,
+  setTo,
+}: {
+  period: Period;
+  setPeriod: (p: Period) => void;
+  from: string;
+  setFrom: (v: string) => void;
+  to: string;
+  setTo: (v: string) => void;
+}) {
+  return (
+    <div className="row" style={{ gap: "0.5rem", flexWrap: "wrap" }}>
+      {(["today", "week", "month", "custom"] as Period[]).map((p) => (
+        <button key={p} className={period === p ? "primary small" : "ghost small"} onClick={() => setPeriod(p)}>
+          {p === "today" ? "Today" : p === "week" ? "Week" : p === "month" ? "Month" : "Custom"}
+        </button>
+      ))}
+      {period === "custom" && (
+        <>
+          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} style={{ width: "auto" }} />
+          <input type="date" value={to} onChange={(e) => setTo(e.target.value)} style={{ width: "auto" }} />
+        </>
+      )}
+    </div>
+  );
+}
+
+function ExportButtons({ onExport }: { onExport: (format: "csv" | "xlsx" | "pdf") => void }) {
+  return (
+    <div className="row" style={{ gap: "0.4rem" }}>
+      <button className="ghost small" onClick={() => onExport("csv")}>Export CSV</button>
+      <button className="ghost small" onClick={() => onExport("xlsx")}>Export Excel</button>
+      <button className="ghost small" onClick={() => onExport("pdf")}>Export PDF</button>
+    </div>
+  );
+}
+
+function OwnerAnalyticsTab({ stallId, stallName }: { stallId: string | null; stallName: string | undefined }) {
+  const [period, setPeriod] = useState<Period>("today");
+  const [from, setFrom] = useState(() => new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10));
+  const [to, setTo] = useState(() => new Date().toISOString().slice(0, 10));
+  const [data, setData] = useState<OwnerAnalytics | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const query = period === "custom" ? `period=custom&from=${from}&to=${to}` : `period=${period}`;
+
+  useEffect(() => {
+    if (!stallId) return;
+    if (period === "custom" && (!from || !to)) return;
+    setData(null);
+    api<OwnerAnalytics>(`/api/owner/stalls/${stallId}/analytics?${query}`).then(setData).catch((e) => setError(e.message));
+  }, [stallId, query, period, from, to]);
+
+  async function handleExport(format: "csv" | "xlsx" | "pdf") {
+    if (!stallId) return;
+    try {
+      await downloadFile(`/api/owner/stalls/${stallId}/analytics/export?${query}&format=${format}`, `analytics.${format}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Export failed.");
+    }
+  }
+
+  return (
+    <>
+      <div className="page-hero">
+        <div className="page-hero-row">
+          <PageHead title="Analytics" subtitle={stallName ? `Deep-dive metrics for ${stallName}` : undefined} />
+          <ExportButtons onExport={handleExport} />
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: "1rem" }}>
+        <PeriodPicker period={period} setPeriod={setPeriod} from={from} setFrom={setFrom} to={to} setTo={setTo} />
+      </div>
+
+      {error && <div className="error-banner" role="alert">{error}</div>}
+
+      <div className="stat-row">
+        <StatCard icon={IndianRupee} label="Revenue" tone="success" value={data ? <AnimatedNumber value={data.revenue} prefix="₹" /> : <Skeleton width={60} height={28} />} />
+        <StatCard icon={Receipt} label="Total orders" tone="accent" value={data ? data.totalOrders : <Skeleton width={32} height={28} />} />
+        <StatCard icon={IndianRupee} label="Avg order value" tone="info" value={data ? `₹${data.avgOrderValue}` : <Skeleton width={48} height={28} />} />
+        <StatCard icon={Users} label="New / Returning" tone="accent" value={data ? `${data.newCustomers} / ${data.returningCustomers}` : <Skeleton width={48} height={28} />} sub={data ? `${data.repeatCustomerRatePct}% repeat` : undefined} />
+        <StatCard icon={Star} label="Avg rating" tone="success" value={data ? (data.rating.average ?? "—") : <Skeleton width={32} height={28} />} sub={data ? `${data.rating.count} ratings` : undefined} />
+      </div>
+
+      <div className="stat-row">
+        <StatCard icon={Hourglass} label="Avg acceptance" tone="info" value={data ? formatAcceptanceTime(data.sla.avgAcceptanceSeconds) : <Skeleton width={48} height={28} />} />
+        <StatCard icon={Flame} label="Avg prep time" tone="accent" value={data ? (data.avgPrepMinutes != null ? `${data.avgPrepMinutes}m` : "—") : <Skeleton width={32} height={28} />} />
+        <StatCard icon={CheckCircle2} label="On-time prep rate" tone="success" value={data ? (data.sla.onTimePreparationRate != null ? `${data.sla.onTimePreparationRate}%` : "—") : <Skeleton width={48} height={28} />} />
+        <StatCard icon={XCircle} label="Cancellation rate" tone={data && data.cancellationRatePct > 0 ? "warn" : "accent"} value={data ? `${data.cancellationRatePct}%` : <Skeleton width={32} height={28} />} />
+        <StatCard icon={UserX} label="No-show rate" tone={data && data.noShowRatePct > 0 ? "warn" : "accent"} value={data ? `${data.noShowRatePct}%` : <Skeleton width={32} height={28} />} />
+      </div>
+
+      <div className="overview-grid">
+        <div className="stack">
+          <div className="card">
+            <div className="card-title">Revenue trend</div>
+            <TrendLine data={data?.revenueTrend.map((d) => ({ day: d.day, value: d.revenue })) ?? []} valueFormatter={(v) => `₹${v}`} />
+          </div>
+          <div className="card">
+            <div className="card-title">Peak hours</div>
+            <BarChart data={data?.peakHours.map((h) => ({ label: hourLabel(h.hour), value: h.count })) ?? []} />
+          </div>
+          <div className="card">
+            <div className="card-title">Category performance (by revenue)</div>
+            <BarChart data={data?.categoryPerformance.map((c) => ({ label: c.category, value: c.revenue })) ?? []} valueFormatter={(v) => `₹${v}`} />
+          </div>
+        </div>
+        <div className="stack">
+          <div className="card">
+            <div className="card-title">Best selling items</div>
+            <BarChart data={data?.bestSellingItems.map((i) => ({ label: i.name, value: i.qty })) ?? []} />
+          </div>
+          <div className="card">
+            <div className="card-title">Worst selling items</div>
+            <BarChart data={data?.worstSellingItems.map((i) => ({ label: i.name, value: i.qty })) ?? []} />
+          </div>
+          <div className="card">
+            <div className="card-title">Rating trend</div>
+            <TrendLine data={data?.ratingTrend.map((r) => ({ day: r.day, value: r.average })) ?? []} valueFormatter={(v) => `${v}★`} />
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">Offer performance</div>
+        <div className="stat-row" style={{ marginTop: "0.5rem" }}>
+          <StatCard icon={IndianRupee} label="Revenue from offers" tone="success" value={data ? `₹${data.offers.revenueGeneratedByOffers}` : <Skeleton width={48} height={28} />} />
+          <StatCard icon={Tag} label="Discount given" tone="warn" value={data ? `₹${data.offers.discountGiven}` : <Skeleton width={48} height={28} />} />
+          <StatCard icon={Star} label="Best performing offer" tone="accent" value={data ? (data.offers.bestPerformingOffer?.name ?? "—") : <Skeleton width={64} height={28} />} sub={data?.offers.bestPerformingOffer ? `${data.offers.bestPerformingOffer.usageCount} uses` : undefined} />
+        </div>
+        {data?.comboPerformance && data.comboPerformance.length > 0 && (
+          <>
+            <div className="muted" style={{ fontSize: "0.85rem", margin: "0.8rem 0 0.4rem" }}>Combo offers</div>
+            <BarChart data={data.comboPerformance.map((c) => ({ label: c.name, value: c.usageCount }))} />
+          </>
+        )}
+      </div>
+    </>
   );
 }
 
