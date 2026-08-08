@@ -2,7 +2,7 @@
 
 **Purpose:** a complete handoff so a new engineer (or Claude session) can pick this project up with zero prior context. Read this whole document before touching code. The previous version of this file described an early, local-only, Groq-powered prototype — that phase is over. Everything below reflects the system as actually deployed today.
 
-**Last updated:** 2026-08-08 (Stall Rating & Feedback, Offers & Promotions Engine, AI Business Assistant, and an Advanced Analytics Platform shipped this session — see §4.9–§4.12).
+**Last updated:** 2026-08-08 (Stall Rating & Feedback, Offers & Promotions Engine, AI Business Assistant, an Advanced Analytics Platform, and an AI Demand Forecasting System shipped this session — see §4.9–§4.13).
 
 ---
 
@@ -185,6 +185,16 @@ Pickup slots are real `PickupSlot` rows (`slotDate` DATE + `startTime`/`endTime`
 - `GET /api/owner/stalls/:id/analytics` / `GET /api/admin/analytics` (both accept `?period=today|week|month|custom&from=&to=`) return the full JSON payload the dashboard renders (KPI cards + `BarChart`/`TrendLine`, two new lightweight chart components added to `components/Shell.tsx` — plain SVG/CSS, no charting library dependency).
 - **Export**: `GET .../analytics/export?format=csv|xlsx|pdf` — `exportService.ts` defines one common `AnalyticsReport` shape (`{title, summary, tables}`) that all three formats render from, so the export formats never diverge on what data they include, only how they present it. CSV/XLSX use the existing `xlsx` package (already a dependency); PDF uses `pdfkit` (added this session — pure-JS, no native/browser dependency, matching this app's "no queue/worker infra" philosophy).
 - Admin Analytics adds a **stall-vs-stall comparison** picker (two dropdowns, side-by-side revenue/orders/rating) built from the same `stallComparison` array already returned for the campus view — no extra query.
+
+## 4.13 AI Demand Forecasting System (`services/forecastService.ts`)
+
+- New "AI Forecast" tab on both dashboards predicting **tomorrow's** demand from real historical data. Reuses `advancedAnalyticsService.getOwnerAnalytics`/`getAdminAnalytics` (a rolling 30-day "month" range) as the data snapshot — the only new query is a day-of-week order distribution, since neither existing service buckets by weekday.
+- **Refuses to fabricate**: if a stall (or the campus) has fewer than `MIN_TOTAL_ORDERS` (10) orders across `MIN_ORDER_DAYS` (5) distinct days in the last 30, the endpoint returns `{ sufficient: false, reason: "..." }` *without ever calling Gemini* — this is a hard product requirement, not just a prompt instruction, so it can't be bypassed by a creative model response.
+- Uses **structured Gemini output** (`config.responseMimeType: "application/json"` + `responseSchema`) rather than free text — the dashboard renders typed fields (`expectedOrdersTomorrow`, `peakHours`, `predictedBestSellers`, `suggestedPrepQuantities`, etc.) directly, no parsing/regex needed. The system prompt (`FORECAST_RULES`) explicitly forbids inventing numbers/names not present in the data snapshot and requires flagging thin fields (e.g. "no offers redeemed") instead of guessing.
+- Owner forecast fields: expected orders/revenue/customer volume tomorrow, peak hours, offer/SLA-load expectations, predicted best/worst sellers, suggested prep quantities, recommended stock increases, staffing suggestion, sell-out/overstock risk lists, recommended offers for tomorrow, a `confidence` level, and a one-line `summary`.
+- Admin forecast fields: expected campus orders/revenue tomorrow, busiest blocks, highest-demand stalls, expected peak hours, campus trends, `confidence`, `summary`.
+- `GET /api/owner/stalls/:id/forecast` / `GET /api/admin/forecast` — no query params (always forecasts "tomorrow"); the dashboard has a manual "Regenerate" button rather than auto-refreshing, since each call is a real Gemini request.
+- Verified via `tmpTest*.ts` scripts (deleted after use, per convention) against real production data — correctly reported insufficient data at current volumes — and against synthetic historical orders (12 orders across 6 distinct days, cleaned up after the run), which produced a full, schema-valid, data-grounded forecast on both endpoints.
 
 ---
 
