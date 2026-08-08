@@ -2,7 +2,7 @@
 
 **Purpose:** a complete handoff so a new engineer (or Claude session) can pick this project up with zero prior context. Read this whole document before touching code. The previous version of this file described an early, local-only, Groq-powered prototype — that phase is over. Everything below reflects the system as actually deployed today.
 
-**Last updated:** 2026-08-08 (Stall Rating & Feedback, Offers & Promotions Engine, and AI Business Assistant shipped this session — see §4.9–§4.11).
+**Last updated:** 2026-08-08 (Stall Rating & Feedback, Offers & Promotions Engine, AI Business Assistant, and an Advanced Analytics Platform shipped this session — see §4.9–§4.12).
 
 ---
 
@@ -177,6 +177,14 @@ Pickup slots are real `PickupSlot` rows (`slotDate` DATE + `startTime`/`endTime`
 - `askAdminAssistant(question)` gathers campus-wide aggregate data only (`analyticsService.getOverview`/`getStallInsights`, `ratingService.getStallRankings`, `offerService.getCampusOfferAnalytics`) — no individual student data is ever included in the prompt.
 - New routes: `POST /api/owner/stalls/:id/ai-assistant` (ownership-checked like every other owner route) and `POST /api/admin/ai-assistant`. Both dashboards get an "Ask AI" tab with suggested-question chips and a simple chat-style transcript (`AskAiPanel`, duplicated per-dashboard per this app's small-component-duplication convention rather than a new shared-component module).
 - Students never see this — it's owner/admin-only, gated by the existing `requireAuth("stall_owner"/"super_admin")` middleware already on every route in these routers.
+
+## 4.12 Advanced Analytics Platform (`services/advancedAnalyticsService.ts`, `services/exportService.ts`)
+
+- New "Analytics" tab on both dashboards with a Today/Week/Month/Custom date-range picker (`resolveDateRange` — week/month are **rolling** 7/30-day windows, not calendar week/month, for the same "avoid date-boundary edge cases" reasoning as the rest of this app; custom reuses `orderService.istDayBounds` for each endpoint, same convention as the existing Owner Dashboard history picker).
+- **Deliberately reuses rather than recomputes**: `orderService.getSlaMetricsForStall` (acceptance/prep/SLA/no-show), `ratingService.getStallRatingDetail`/`getStallRankings` (rating detail/rankings), `offerService.getOfferAnalytics`/`getCampusOfferAnalytics` (offer usage/discount), `analyticsService`'s existing hour-bucketing pattern. Only genuinely new aggregations live in `advancedAnalyticsService.ts`: revenue/order/AOV for an arbitrary range, best/worst-selling items, category performance, new-vs-returning customers + repeat rate, peak hours, cancellation/no-show rate, revenue/rating trend lines (`ratingService.getRatingTrend`, day-bucketed), and campus-wide per-stall/per-block aggregation.
+- `GET /api/owner/stalls/:id/analytics` / `GET /api/admin/analytics` (both accept `?period=today|week|month|custom&from=&to=`) return the full JSON payload the dashboard renders (KPI cards + `BarChart`/`TrendLine`, two new lightweight chart components added to `components/Shell.tsx` — plain SVG/CSS, no charting library dependency).
+- **Export**: `GET .../analytics/export?format=csv|xlsx|pdf` — `exportService.ts` defines one common `AnalyticsReport` shape (`{title, summary, tables}`) that all three formats render from, so the export formats never diverge on what data they include, only how they present it. CSV/XLSX use the existing `xlsx` package (already a dependency); PDF uses `pdfkit` (added this session — pure-JS, no native/browser dependency, matching this app's "no queue/worker infra" philosophy).
+- Admin Analytics adds a **stall-vs-stall comparison** picker (two dropdowns, side-by-side revenue/orders/rating) built from the same `stallComparison` array already returned for the campus view — no extra query.
 
 ---
 
