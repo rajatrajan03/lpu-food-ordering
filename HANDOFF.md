@@ -2,7 +2,7 @@
 
 **Purpose:** a complete handoff so a new engineer (or Claude session) can pick this project up with zero prior context. Read this whole document before touching code. The previous version of this file described an early, local-only, Groq-powered prototype — that phase is over. Everything below reflects the system as actually deployed today.
 
-**Last updated:** 2026-08-08.
+**Last updated:** 2026-08-08 (Stall Rating & Feedback, Offers & Promotions Engine, and AI Business Assistant shipped this session — see §4.9–§4.11).
 
 ---
 
@@ -154,6 +154,30 @@ Pickup slots are real `PickupSlot` rows (`slotDate` DATE + `startTime`/`endTime`
 - **Admin Dashboard**: Overview (live campus stats, attention panel, peak hour, activity feed), Stalls (search, bulk pause/resume, per-stall pause/night-open toggle, menu editor modal), Category Review, Assign Owners (now with Confirm Password + show/hide toggle — see §6), Students.
 - `api/client.ts` attaches the Bearer token and silently retries GET requests once on a transient failure.
 
+## 4.9 Stall Rating & Feedback (`services/ratingService.ts`, `ai/ratingFlow.ts`)
+
+- After an owner marks an order `completed` (via `POST /api/owner/stalls/:id/orders/:orderId/status`, the only route a genuine owner-driven completion goes through — the no-show sweep calls `transitionOrderStatus` directly, so no-show closures never trigger this), `triggerRatingPrompt` fires a fire-and-forget WhatsApp list message: 5★ down to 1★.
+- 4–5★ saves immediately with a thank-you. 1–3★ asks a reason (Food Quality / Service / Pickup Delay / Wrong Order / Other, List Message — 5 options exceeds the 3-button cap) then an optional free-text comment (`"skip"` or empty = no comment).
+- Deterministic wizard: `session.ratingFlow`, checked with **top priority** in `handleIncomingMessage` (before `smartFlow`/`browseFlow`) since it's usually the very next message after a completion push. Step logic (`handleRatingFlowStep`) is inline in `conversationEngine.ts`, mirroring `smartFlow`; only the proactive trigger lives in the separate `ai/ratingFlow.ts` (imports `getSessionState` one-directionally from `conversationEngine.ts`, same pattern as `slaMonitor.ts`, to avoid a circular import).
+- One rating per order: `Rating.orderId` is `@unique` (DB-enforced) plus an app-level pre-check in `ratingService.submitRating` for a friendlier error.
+- **Anonymous by design, including to the stall owner** — no student identity is ever surfaced anywhere, not just hidden from other students. Students only ever see a stall's aggregate (`⭐ 4.6 (324 Ratings)`) in `list_stalls` and Browse Stalls — never reviews/comments/reviewer names (explicit system-prompt rule + no tool ever returns that data to the student-facing AI).
+- Owners see aggregate + a reason breakdown + up to 20 recent comments (`GET /api/owner/stalls/:id/ratings`, Owner Dashboard's "Ratings & Feedback" section). Admins see campus-wide rankings (`GET /api/admin/stalls/rankings`, Overview tab).
+- All aggregation is on-the-fly via `prisma.rating.aggregate`/`groupBy` — no denormalized `Stall.avgRating` field, matching this app's existing convention (see `analyticsService.ts`).
+
+## 4.10 Offers & Promotions Engine (`services/offerService.ts`)
+
+- `Offer` model supports 8 types (percentage/flat discount, buy-X-get-Y, free item, combo, happy hour, festival, min-order-value), each with optional `validFrom`/`validUntil`, `minOrderValue`, `maxDiscount`, and item/category scoping (`applicableItemIds`/`applicableCategoryNames` — plain string arrays, not FK-backed join tables, matching this app's "on-the-fly over denormalized tables" convention; empty arrays mean "whole menu").
+- `offerService.computeBestOffer(stallId, cartLines)` evaluates every currently-active offer (`active: true` **and** within `validFrom`/`validUntil` — an expired or deactivated offer is never even considered) and returns the single highest-discount one. `orderService.placeOrder` calls this automatically inside its transaction, subtracts the discount from `totalAmount`, and writes an `OfferRedemption` row — the source of truth for usage count / total discount given (aggregated on the fly, same convention as ratings).
+- The WhatsApp order confirmation explains which offer applied and the savings (`🎉 <name> applied (<explanation>) — you saved ₹X!`). A dedicated AI tool, `get_stall_offers`, lets the model answer "what's the best deal here" / "cheapest option" on request; `list_stalls` and Browse Stalls both surface active-offer counts below the rating line.
+- Owner CRUD (`GET/POST/PATCH/DELETE /api/owner/stalls/:id/offers`, `.../offers/:id/activate|deactivate`) via a new "Offers" tab in the Owner Dashboard (list + create/edit slide-over + usage/discount stats). Admin gets a read-only campus-wide "Offers" tab (`GET /api/admin/offers`, `.../offers/analytics`) with enable/disable.
+
+## 4.11 AI Business Assistant (`services/businessAssistantService.ts`)
+
+- Reuses the existing Gemini client (`ai/geminiClient.ts`) — no new AI pipeline. `askOwnerAssistant(stallId, question)` gathers a JSON snapshot from **only that stall's own data** (today's completed orders/revenue/item sales/busiest hours via `orderService`, SLA metrics, `ratingService.getStallRatingDetail`, `offerService.getOfferAnalytics`) and prompts Gemini to answer solely from that snapshot with a concise, actionable recommendation — never inventing numbers.
+- `askAdminAssistant(question)` gathers campus-wide aggregate data only (`analyticsService.getOverview`/`getStallInsights`, `ratingService.getStallRankings`, `offerService.getCampusOfferAnalytics`) — no individual student data is ever included in the prompt.
+- New routes: `POST /api/owner/stalls/:id/ai-assistant` (ownership-checked like every other owner route) and `POST /api/admin/ai-assistant`. Both dashboards get an "Ask AI" tab with suggested-question chips and a simple chat-style transcript (`AskAiPanel`, duplicated per-dashboard per this app's small-component-duplication convention rather than a new shared-component module).
+- Students never see this — it's owner/admin-only, gated by the existing `requireAuth("stall_owner"/"super_admin")` middleware already on every route in these routers.
+
 ---
 
 # 5. Database
@@ -172,16 +196,21 @@ Source of truth: `backend/prisma/schema.prisma` — always read it directly, thi
 | `CanonicalCategory` / `MenuCategory` | Category taxonomy | raw imported labels mapped (or pending review) to a shared taxonomy |
 | `MenuItem` / `ItemVariant` | Menu | `basePrice` (Decimal), `available`, `imageUrl` |
 | `PickupSlot` | Bookable time window | `slotDate` (Date) + `startTime`/`endTime` (Time) stored **separately** — see §4.7; `@@unique([stallId, slotDate, startTime])` |
-| `Order` | Placed order | `displayId` (unique, customer-facing), full SLA field set (§4.5), `@@index([stallId, status])` |
+| `Order` | Placed order | `displayId` (unique, customer-facing), full SLA field set (§4.5), `discountAmount` (offer applied, §4.10), `@@index([stallId, status])` |
 | `OrderItem` | Order line item | `itemNameSnapshot` — frozen at order time so history displays correctly even if the menu item changes later |
+| `Rating` | One rating per completed order (§4.9) | `orderId` `@unique`, `stars`, optional `reason`/`comment` — never exposes reviewer identity |
+| `Offer` | Stall promotion (§4.10) | `type`, `active`, `validFrom`/`validUntil`, optional discount/min/max/scoping fields per type |
+| `OfferRedemption` | One row per order an offer applied to (§4.10) | `orderId` `@unique`, `discountAmount` — source of truth for usage/discount analytics |
 
 ## Enums
 - `OrderStatus`: `placed | accepted | rejected | preparing | ready | completed | cancelled`
 - `StallStatus`: `active | paused`
 - `MealPeriod`: `breakfast | lunch | snacks | dinner`
+- `RatingReason`: `food_quality | service | pickup_delay | wrong_order | other`
+- `OfferType`: `percentage_discount | flat_discount | buy_x_get_y | free_item | combo | happy_hour | festival | min_order_value`
 
 ## Migrations (chronological, all hand-written SQL)
-`20260728191509_init` → `stall_owner_google` → `super_admin_2fa_google` → `stall_night_open` → `student_onboarding` → `student_preferences` → `order_display_id` → `order_sla_accountability`. Apply new ones via `npx prisma migrate deploy` only — never `migrate dev`/`diff` against the production `DATABASE_URL`.
+`20260728191509_init` → `stall_owner_google` → `super_admin_2fa_google` → `stall_night_open` → `student_onboarding` → `student_preferences` → `order_display_id` → `order_sla_accountability` → `20260808_stall_ratings` → `20260808_offers_engine`. Apply new ones via `npx prisma migrate deploy` only — never `migrate dev`/`diff` against the production `DATABASE_URL`.
 
 ---
 
