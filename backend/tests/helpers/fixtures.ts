@@ -41,10 +41,24 @@ export function uniqueWhatsapp(): string {
   return `91${nextId()}`;
 }
 
-function timeOnDate(date: Date, hh: number, mm: number): Date {
-  const d = new Date(date);
-  d.setHours(hh, mm, 0, 0);
-  return d;
+// Pure UTC construction, deliberately not local Date methods — `slotDate` is
+// a @db.Date and `startTime`/`endTime` are @db.Time columns with no
+// timezone of their own, and this app's read side (menuService's
+// getAvailablePickupSlots) computes "today" via `fromDate.getUTCFullYear()`
+// etc. Building fixtures with local `setHours` (IST on a dev machine) makes
+// slotDate silently land on the *previous* UTC calendar date for roughly a
+// third of the day (IST midnight-5:30am), which only shows up as test
+// flakiness depending on what wall-clock hour happens to be running when
+// the suite executes — exactly what happened here (a grace-period test
+// passed for hours, then started failing once real time crossed the
+// UTC-day boundary). Pure UTC arithmetic is deterministic regardless of
+// what timezone or time of day the suite runs in.
+function utcDayStart(date: Date): Date {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+
+function utcTimeOfDay(hh: number, mm: number): Date {
+  return new Date(Date.UTC(1970, 0, 1, hh, mm, 0, 0));
 }
 
 /**
@@ -119,17 +133,18 @@ export class TestContext {
     });
   }
 
+  /** `hour` is UTC (not local/IST) — see utcDayStart/utcTimeOfDay's comment for why. */
   async createPickupSlot(stallId: string, opts: { dayOffset?: number; hour?: number; maxCapacity?: number } = {}) {
-    const date = new Date();
-    date.setDate(date.getDate() + (opts.dayOffset ?? 0));
-    date.setHours(0, 0, 0, 0);
+    const ref = new Date();
+    ref.setUTCDate(ref.getUTCDate() + (opts.dayOffset ?? 0));
+    const dayStart = utcDayStart(ref);
     const hour = opts.hour ?? 12;
     return prisma.pickupSlot.create({
       data: {
         stallId,
-        slotDate: date,
-        startTime: timeOnDate(date, hour, 0),
-        endTime: timeOnDate(date, hour, 15),
+        slotDate: dayStart,
+        startTime: utcTimeOfDay(hour, 0),
+        endTime: utcTimeOfDay(hour, 15),
         maxCapacity: opts.maxCapacity ?? 8,
       },
     });

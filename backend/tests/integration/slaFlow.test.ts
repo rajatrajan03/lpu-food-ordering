@@ -47,6 +47,45 @@ describe("SLA flow: order -> no response -> auto reject -> alternative stall sug
     expect(freedSlot.bookedCount).toBe(0);
   });
 
+  it("auto-rejects a placed order with a null acceptDeadline instead of leaving it stuck forever", async () => {
+    // Regression test for a real production bug: an order that somehow ended
+    // up with acceptDeadline=null (placeOrder() always sets one, but this
+    // happened anyway — likely data created outside the normal flow) sat in
+    // "placed" for 5+ days because Postgres's `lte` comparison never matches
+    // NULL. It only surfaced when an owner finally rejected it manually,
+    // which sent a confusing "your order was rejected" WhatsApp message to
+    // a student who'd ordered nearly a week earlier.
+    const stall = await ctx.createStall();
+    const student = await ctx.createStudent();
+    const item = await ctx.createMenuItem(stall.id);
+    const slot = await ctx.createPickupSlot(stall.id);
+    const order = await ctx.createOrder({ studentId: student.id, stallId: stall.id, pickupSlotId: slot.id, menuItemId: item.id, status: "placed" });
+    expect(order.acceptDeadline).toBeNull();
+
+    await runSlaSweep();
+
+    const swept = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(swept.status).toBe("rejected");
+    expect(swept.autoRejected).toBe(true);
+  });
+
+  it("auto-rejects a placed order older than 24h even if its acceptDeadline somehow reads as still in the future", async () => {
+    const stall = await ctx.createStall();
+    const student = await ctx.createStudent();
+    const item = await ctx.createMenuItem(stall.id);
+    const slot = await ctx.createPickupSlot(stall.id);
+    const order = await ctx.createOrder({ studentId: student.id, stallId: stall.id, pickupSlotId: slot.id, menuItemId: item.id, status: "placed" });
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { placedAt: new Date(Date.now() - 25 * 60 * 60_000), acceptDeadline: new Date(Date.now() + 60_000) },
+    });
+
+    await runSlaSweep();
+
+    const swept = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(swept.status).toBe("rejected");
+  });
+
   it("does not touch an order that's still within its accept deadline", async () => {
     const stall = await ctx.createStall();
     const student = await ctx.createStudent();
@@ -101,7 +140,8 @@ describe("No-show flow: ready -> grace period elapses -> auto-closed as no-show"
     const student = await ctx.createStudent();
     const item = await ctx.createMenuItem(stall.id);
     // slot ending a couple minutes ago — well inside a 60-minute grace period
-    const slot = await ctx.createPickupSlot(stall.id, { dayOffset: 0, hour: new Date().getHours() });
+    // (createPickupSlot's `hour` is UTC — see fixtures.ts)
+    const slot = await ctx.createPickupSlot(stall.id, { dayOffset: 0, hour: new Date().getUTCHours() });
     const order = await ctx.createOrder({ studentId: student.id, stallId: stall.id, pickupSlotId: slot.id, menuItemId: item.id, status: "ready" });
 
     await runSlaSweep();

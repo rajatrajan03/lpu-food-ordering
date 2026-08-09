@@ -98,11 +98,29 @@ async function suggestAlternativeStalls(studentId: string, originalStallId: stri
   }
 }
 
-/** Orders past their accept deadline, still awaiting a response — auto-rejected, no penalty to the owner. */
+/**
+ * Orders past their accept deadline, still awaiting a response — auto-rejected, no penalty to the owner.
+ *
+ * Also catches `acceptDeadline: null` — placeOrder() always sets a deadline,
+ * so this should never happen for an order created through the normal
+ * flow, but a real order was once found stuck in "placed" for 5+ days with
+ * a null deadline (likely from data created outside placeOrder, e.g. an
+ * import/migration/test fixture) — Postgres's `lte` comparison never
+ * matches NULL, so the plain deadline check silently never touched it. It
+ * sat in the owner's "needs attention" queue until they finally rejected
+ * it manually, which sent a genuinely confusing "your order was rejected"
+ * WhatsApp message to a student who'd ordered almost a week earlier. A
+ * generous absolute-age fallback (24h) is a second, independent backstop
+ * against the same class of bug recurring in some other unanticipated way.
+ */
 async function sweepUnansweredOrders(): Promise<void> {
   const now = new Date();
+  const staleFallback = new Date(now.getTime() - 24 * 60 * 60_000);
   const overdue = await prisma.order.findMany({
-    where: { status: "placed", acceptDeadline: { lte: now } },
+    where: {
+      status: "placed",
+      OR: [{ acceptDeadline: { lte: now } }, { acceptDeadline: null }, { placedAt: { lte: staleFallback } }],
+    },
     include: { stall: true },
   });
   for (const order of overdue) {
