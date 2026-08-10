@@ -95,6 +95,15 @@ export const toolDefinitions: Groq.Chat.Completions.ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "clear_cart",
+      description:
+        "Empty the entire draft cart in one call. Use this whenever the student says 'clear', 'clear my cart', 'start over', or wants to order from a different stall than what's currently in the cart — never try to empty the cart by calling remove_from_cart repeatedly.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "get_pickup_slots",
       description:
         "Get bookable pickup time slots for the stall the current cart belongs to. Call this once the student is ready to check out. If they named a specific time (e.g. \"around 6pm\", \"after 5\"), pass preferred_time so the results are the closest slots to that time instead of the soonest ones — if the closest result is still far off, tell the student plainly that nothing is available near their requested time rather than silently showing unrelated slots.",

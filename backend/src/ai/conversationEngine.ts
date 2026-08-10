@@ -58,7 +58,7 @@ Rules:
 - When the craving comes with a location ("chai near CC", "burger near boys hostel"), pass BOTH query and area/block to search_menu in that ONE call. Never fall back to list_stalls-by-area for a craving request — that returns every stall in the area regardless of whether they serve what was asked for, which is wrong.
 - When the student names a specific stall by its proper name (e.g. "Chai Sutta Bar", "Khao Piyo") — especially one you don't already have the id for — call list_stalls with that name as the query field to look it up directly. Do NOT ask them what area/block it's in first; that's a search_menu-vs-list_stalls mixup, not something you need to ask about. Once you have its id (from this call, a prior tool result, or Known references), scope search_menu to that stall_id.
 - If the student says "different", "something else", "other options", or similar after you've already shown a list, NEVER show the same items again — call search_menu again with the exact same query/stall_id/etc. plus the offset field set to how many items you already showed, so they see a new batch. If that comes back empty, say so plainly instead of repeating the old list.
-- A cart can only contain items from one stall. If the student wants a different stall mid-cart, tell them clearly they'll need to check out or clear the current cart first.
+- A cart can only contain items from one stall. If the student wants a different stall mid-cart, tell them clearly they'll need to check out or clear the current cart first. If they say "clear"/"clear my cart"/"start over", call clear_cart directly — never empty it by calling remove_from_cart in a loop.
 - Always show prices when listing items or the cart.
 - After calling get_pickup_slots, your text reply is discarded and never sent — a tappable time picker with its own "Pick a pickup time" header goes out instead, so don't bother crafting a reply for this turn. Once the student replies with a time (typed or tapped), resolve it to a pickup_slot_id from Known references' "Pickup slots" map — do NOT call get_pickup_slots again just to re-look-up a time you already showed; only call it again if the student is starting a fresh checkout for a different stall/cart.
 - If the student sends something unrelated to picking a slot while one is pending (e.g. "remove it", changing an item), handle that request directly — removing/changing a cart item never requires re-fetching pickup slots.
@@ -70,7 +70,7 @@ Rules:
 - "My order history" / "my past orders" -> call get_order_history. "Repeat my last order" / "same as last time" -> call repeat_last_order directly (don't manually look up and re-add items one by one) — it fills the cart from their most recent order and tells you if anything from it is no longer available, which you should mention.
 - BE EXTREMELY BRIEF. This is a WhatsApp chat, not a report: 1–3 short lines of text plus a list when needed, nothing more. Never restate the student's question back to them, never add filler like "let me know if you need anything else" or "just say the word", never explain what you're about to do — just do it and show the result. Never use markdown tables — use a short numbered list instead. For a list of results, show at most 4–5 items and stop; do not add a trailing invitation sentence beyond one short "more?" style prompt if truly needed.
 - A "Known references" block may follow with name -> id lookups from earlier in this conversation. Use those ids directly instead of calling a tool again for something you already looked up — but never invent an id that isn't listed there or in a tool result. This also covers references like "the first one" or "that one", or a bare number like "2" after you've numbered a list — resolve them yourself from what you just listed, don't ask the student to repeat themselves.
-- NEVER show raw database ids to the student, and NEVER repeat or summarize the "Known references" block back in your reply — that block is for your own internal use only, the student must never see it or anything resembling it. When listing stalls or items, number them (1, 2, 3...) and show just the name/area/price; the student will reply by number or name, and you resolve that yourself using the Known references or the numbered list you just sent.
+- NEVER show raw database ids to the student, and NEVER repeat or summarize the "Known references" block back in your reply — that block is for your own internal use only, the student must never see it or anything resembling it. When list_stalls or search_menu returns more than one result, a tappable list is sent automatically after your reply — do NOT also write the stall/item names as a numbered list in your text; just give a short one-line intro (e.g. "Found a few near CC:") and let the list speak for itself. The student may still reply by typing a name or number instead of tapping — resolve that yourself using the Known references.
 - You only have student-facing tools. Never claim to change stall settings, menus, or other students' orders — that's outside what you can do here.
 - list_stalls results may include a rating/ratingCount for a stall — if present, you may mention it briefly (e.g. "⭐ 4.6 (324 Ratings)") when listing stalls. Never mention a rating if it's absent (no ratings yet). Never discuss, invent, or offer to show individual reviews or comments — students only ever see the aggregate number.
 - list_stalls results may include activeOffers (offer names). If a stall has any, you may mention "🎉 X active offer(s)" briefly. If the student asks about deals, discounts, the cheapest option, or "best deal", call get_stall_offers for the relevant stall and recommend naturally — explain what the offer is and roughly how much it saves, but never invent an offer that wasn't returned by a tool, and never mention an offer that isn't currently active. The best valid offer is applied automatically at checkout — you don't need to do anything extra for that, just mention it exists.`;
@@ -192,6 +192,10 @@ interface ToolSideEffects {
   placedOrderId?: string;
   /** Set by get_order_status when there's more than one active order, so the caller can follow up with a picker. */
   orderStatusRows?: ListRow[];
+  /** Set by list_stalls when it returns more than one stall, so the caller can follow up with a tappable list instead of the model dumping a plain-text list. Mutually exclusive with itemRows — whichever tool ran last in the turn wins. */
+  stallRows?: ListRow[];
+  /** Set by search_menu when it returns results, so the caller can follow up with a tappable list. Mutually exclusive with stallRows. */
+  itemRows?: ListRow[];
 }
 
 // ---------------------------------------------------------------------------
@@ -491,6 +495,20 @@ async function executeTool(
       session.knownStalls = rememberNames(session.knownStalls, stalls.map((s) => [s.name, s.id]));
       const ratings = await ratingService.getStallRatingSummaries(stalls.map((s) => s.id));
       const offersByStall = await Promise.all(stalls.map((s) => offerService.getActiveOffersForStall(s.id)));
+      // A single-result lookup (resolving one named stall to its id, usually
+      // followed by a scoped search_menu call in the same turn) shouldn't
+      // surface as a tappable list — only show one when there's an actual
+      // choice to make. WhatsApp interactive lists cap at 10 rows.
+      if (stalls.length > 1) {
+        sideEffects.stallRows = stalls.slice(0, 10).map((s) => {
+          const r = ratings.get(s.id);
+          const description = [s.area ?? s.block, r?.average ? `⭐${r.average.toFixed(1)}` : undefined]
+            .filter(Boolean)
+            .join(" · ");
+          return { id: s.id, title: s.name.slice(0, 24), description: description || undefined };
+        });
+        sideEffects.itemRows = undefined;
+      }
       // Trimmed to just what the model needs to talk about a stall — the full
       // Prisma row (openingHours, pickupNote, createdAt, status...) was the
       // single biggest contributor to blowing Groq's free-tier token budget,
@@ -514,6 +532,14 @@ async function executeTool(
       });
       session.knownItems = rememberNames(session.knownItems, items.map((i) => [i.name, i.id]));
       session.knownStalls = rememberNames(session.knownStalls, items.map((i) => [i.stall.name, i.stallId]));
+      if (items.length > 0) {
+        sideEffects.itemRows = items.slice(0, 10).map((i) => ({
+          id: i.id,
+          title: i.name.slice(0, 24),
+          description: `₹${Number(i.basePrice)}${i.isVeg ? " · Veg" : ""}`,
+        }));
+        sideEffects.stallRows = undefined;
+      }
       // Same trim as list_stalls — drop the nested full stall/category rows
       // and only keep the fields the model actually needs to answer with.
       return items.map((i) => ({
@@ -567,6 +593,12 @@ async function executeTool(
       const variantId = args.variant_id as string | undefined;
       session.cart = session.cart.filter((l) => !(l.itemId === itemId && l.variantId === variantId));
       if (session.cart.length === 0) session.activeStallId = undefined;
+      return { cart: session.cart };
+    }
+
+    case "clear_cart": {
+      session.cart = [];
+      session.activeStallId = undefined;
       return { cart: session.cart };
     }
 
@@ -947,7 +979,11 @@ export async function handleIncomingMessage(
   });
 
   const hasFollowUp = Boolean(
-    sideEffects.pickupSlotRows?.length || sideEffects.placedOrderId || sideEffects.orderStatusRows?.length,
+    sideEffects.pickupSlotRows?.length ||
+      sideEffects.placedOrderId ||
+      sideEffects.orderStatusRows?.length ||
+      sideEffects.stallRows?.length ||
+      sideEffects.itemRows?.length,
   );
 
   if (sideEffects.pickupSlotRows?.length) {
@@ -971,6 +1007,12 @@ export async function handleIncomingMessage(
   }
   if (sideEffects.orderStatusRows?.length) {
     await sendWhatsAppList(whatsappNumber, "You have multiple active orders — which one?", "Choose order", sideEffects.orderStatusRows);
+  }
+  if (sideEffects.stallRows?.length) {
+    await sendWhatsAppList(whatsappNumber, "Choose a stall:", "Choose stall", sideEffects.stallRows);
+  }
+  if (sideEffects.itemRows?.length) {
+    await sendWhatsAppList(whatsappNumber, "Choose an item:", "Choose item", sideEffects.itemRows);
   }
 
   return hasFollowUp ? null : finalReply;

@@ -247,7 +247,15 @@ export async function getAdminAnalytics(range: DateRange) {
   }));
 
   const highestSlaViolationStalls = [...stallComparison].sort((a, b) => b.slaViolations - a.slaViolations).slice(0, 10);
-  const lowestRatedStalls = [...ratingRankings].sort((a, b) => a.average - b.average).slice(0, 10);
+  // A stall with just 1-2 ratings can land at the bottom purely for lack of
+  // a bigger sample to be outranked by — that's "no data", not "genuinely
+  // underperforming". Require a minimum sample size before a stall is
+  // eligible to be flagged as lowest-rated.
+  const MIN_RATINGS_FOR_LOWEST = 3;
+  const lowestRatedStalls = [...ratingRankings]
+    .filter((r) => r.count >= MIN_RATINGS_FOR_LOWEST)
+    .sort((a, b) => a.average - b.average)
+    .slice(0, 10);
   const mostPopularBlocks = [...perBlock.entries()]
     .map(([block, v]) => ({ block, ...v }))
     .sort((a, b) => b.revenue - a.revenue);
