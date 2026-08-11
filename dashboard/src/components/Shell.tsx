@@ -3,7 +3,7 @@ import type { CSSProperties, KeyboardEvent, ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, animate, motion, useMotionValue, useTransform } from "framer-motion";
-import { CornerDownLeft, LogOut, Menu, Moon, Search, Sun, Undo2, UtensilsCrossed, X } from "lucide-react";
+import { ChefHat, ChevronDown, CornerDownLeft, LogOut, Menu, Moon, Search, Sun, Undo2, UtensilsCrossed, X } from "lucide-react";
 import { api, clearAuth, getAuth } from "../api/client";
 
 export interface NavItem {
@@ -13,17 +13,27 @@ export interface NavItem {
   badge?: number;
 }
 
+export interface AskAiConfig {
+  title: string;
+  subtitle?: string;
+  suggestions: string[];
+  disabled?: boolean;
+  ask: (question: string) => Promise<{ answer: string }>;
+}
+
 export function Shell({
   navItems,
   activeKey,
   onNavigate,
   roleLabel,
+  askAi,
   children,
 }: {
   navItems: NavItem[];
   activeKey: string;
   onNavigate: (key: string) => void;
   roleLabel: string;
+  askAi?: AskAiConfig;
   children: ReactNode;
 }) {
   const auth = getAuth();
@@ -43,6 +53,7 @@ export function Shell({
   return (
     <div className="shell">
       <AmbientBackground />
+      {askAi && <AskAiWidget {...askAi} />}
       <header className="topnav">
         <div className="brand">
           <div className="brand-mark">
@@ -146,6 +157,140 @@ export function Shell({
           </motion.div>
         </AnimatePresence>
       </main>
+    </div>
+  );
+}
+
+/**
+ * Site-wide floating chat launcher — collapsed to a small round button in
+ * the corner, expands into a chat panel in place (same pattern as a typical
+ * website support-chat widget). Branded as "Chef" rather than a generic
+ * "Ask AI" label, since a named assistant with its own mark reads as a real
+ * product feature rather than a bolted-on LLM demo. Persists across tab
+ * switches (rendered once in Shell, not per-tab), so it never resets whether
+ * you're on Overview or Analytics.
+ */
+function AskAiWidget({ title, subtitle, suggestions, disabled, ask }: AskAiConfig) {
+  const [open, setOpen] = useState(false);
+  const [question, setQuestion] = useState("");
+  const [messages, setMessages] = useState<{ question: string; answer: string }[]>([]);
+  const [asking, setAsking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+  }, [messages, asking, open]);
+
+  async function submit(q: string) {
+    const trimmed = q.trim();
+    if (!trimmed || asking || disabled) return;
+    setAsking(true);
+    setError(null);
+    setQuestion("");
+    try {
+      const { answer } = await ask(trimmed);
+      setMessages((prev) => [...prev, { question: trimmed, answer }]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not get an answer — please try again.");
+    } finally {
+      setAsking(false);
+    }
+  }
+
+  return (
+    <div className="ai-widget">
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            className="ai-widget-panel"
+            role="dialog"
+            aria-label={title}
+            initial={{ opacity: 0, scale: 0.92, y: 16, transformOrigin: "bottom right" }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.92, y: 16 }}
+            transition={{ duration: 0.22, ease: "easeOut" }}
+          >
+            <div className="ai-widget-head">
+              <div className="ai-widget-avatar">
+                <ChefHat size={17} strokeWidth={2.25} />
+              </div>
+              <div style={{ minWidth: 0 }}>
+                <div className="ai-widget-name">Chef</div>
+                <div className="ai-widget-status">{subtitle ?? title}</div>
+              </div>
+              <button className="ghost small ai-widget-collapse" aria-label="Minimize" onClick={() => setOpen(false)}>
+                <ChevronDown size={16} strokeWidth={2} />
+              </button>
+            </div>
+
+            <div className="ai-widget-body" ref={bodyRef}>
+              {messages.length === 0 && !asking && (
+                <div className="ai-widget-greeting">
+                  <p>Hi, I'm Chef 👋 {title.replace(/^Ask AI /i, "Ask me ")}</p>
+                  {suggestions.length > 0 && (
+                    <div className="row" style={{ gap: "0.4rem", flexWrap: "wrap" }}>
+                      {suggestions.map((s) => (
+                        <button key={s} className="ghost small" disabled={disabled || asking} onClick={() => submit(s)}>
+                          {s}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              {messages.map((m, i) => (
+                <div key={i} className="ai-widget-exchange">
+                  <div className="ai-widget-bubble user">{m.question}</div>
+                  <div className="ai-widget-bubble chef">{m.answer}</div>
+                </div>
+              ))}
+              {asking && (
+                <div className="ai-widget-bubble chef muted">
+                  <span className="spinner" /> Thinking…
+                </div>
+              )}
+            </div>
+
+            {error && <div className="error-banner" role="alert" style={{ margin: "0 1rem 0.6rem" }}>{error}</div>}
+            {disabled && <div className="muted" style={{ padding: "0 1rem 0.6rem", fontSize: "0.8rem" }}>Pick a stall first to ask Chef about it.</div>}
+
+            <div className="ai-widget-input-row">
+              <input
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && submit(question)}
+                placeholder={disabled ? "Select a stall to ask…" : "Ask Chef anything…"}
+                disabled={asking || disabled}
+              />
+              <button className="primary small" onClick={() => submit(question)} disabled={asking || disabled || !question.trim()}>
+                Ask
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <motion.button
+        className="ai-widget-fab"
+        aria-label={open ? "Close Chef" : "Ask Chef"}
+        onClick={() => setOpen((v) => !v)}
+        whileHover={{ scale: 1.06 }}
+        whileTap={{ scale: 0.95 }}
+      >
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.span
+            key={open ? "close" : "chef"}
+            initial={{ opacity: 0, scale: 0.6, rotate: -20 }}
+            animate={{ opacity: 1, scale: 1, rotate: 0 }}
+            exit={{ opacity: 0, scale: 0.6, rotate: 20 }}
+            transition={{ duration: 0.15 }}
+            style={{ display: "flex" }}
+          >
+            {open ? <X size={20} strokeWidth={2.25} /> : <ChefHat size={22} strokeWidth={2.25} />}
+          </motion.span>
+        </AnimatePresence>
+      </motion.button>
     </div>
   );
 }

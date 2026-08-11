@@ -5,7 +5,6 @@ import {
   AlertTriangle,
   BarChart3,
   BellRing,
-  Bot,
   CheckCircle2,
   ChevronDown,
   Clock3,
@@ -148,7 +147,6 @@ const NAV_ITEMS: NavItem[] = [
   { key: "offers", label: "Offers", icon: Tag },
   { key: "analytics", label: "Analytics", icon: BarChart3 },
   { key: "forecast", label: "AI Forecast", icon: Sparkles },
-  { key: "ai", label: "Ask AI", icon: Bot },
 ];
 
 const OWNER_AI_SUGGESTIONS = [
@@ -199,7 +197,7 @@ const OFFER_TYPE_LABEL: Record<string, string> = {
 };
 
 export default function OwnerDashboard() {
-  const [tab, setTab] = useState<"orders" | "offers" | "analytics" | "forecast" | "ai">("orders");
+  const [tab, setTab] = useState<"orders" | "offers" | "analytics" | "forecast">("orders");
   const [stalls, setStalls] = useState<Stall[] | null>(null);
   const [stallId, setStallId] = useState<string | null>(null);
   const [orders, setOrders] = useState<Order[] | null>(null);
@@ -453,21 +451,25 @@ export default function OwnerDashboard() {
   }, [historyOrders, historyCompleted]);
 
   return (
-    <Shell navItems={NAV_ITEMS} activeKey={tab} onNavigate={(k) => setTab(k as "orders" | "offers" | "analytics" | "forecast" | "ai")} roleLabel="Stall Owner">
+    <Shell
+      navItems={NAV_ITEMS}
+      activeKey={tab}
+      onNavigate={(k) => setTab(k as "orders" | "offers" | "analytics" | "forecast")}
+      roleLabel="Stall Owner"
+      askAi={{
+        title: "Ask AI about your stall",
+        subtitle: currentStall ? `Answers use only ${currentStall.name}'s own data.` : undefined,
+        suggestions: OWNER_AI_SUGGESTIONS,
+        disabled: !stallId,
+        ask: (question) => api<{ answer: string }>(`/api/owner/stalls/${stallId}/ai-assistant`, { method: "POST", body: { question } }),
+      }}
+    >
       {error && <div className="error-banner" role="alert">{error}</div>}
 
       {tab === "forecast" ? (
         <OwnerForecastTab stallId={stallId} stallName={currentStall?.name} />
       ) : tab === "analytics" ? (
         <OwnerAnalyticsTab stallId={stallId} stallName={currentStall?.name} />
-      ) : tab === "ai" ? (
-        <AskAiPanel
-          title="Ask AI about your stall"
-          subtitle={currentStall ? `Answers use only ${currentStall.name}'s own data.` : undefined}
-          suggestions={OWNER_AI_SUGGESTIONS}
-          disabled={!stallId}
-          ask={(question) => api<{ answer: string }>(`/api/owner/stalls/${stallId}/ai-assistant`, { method: "POST", body: { question } })}
-        />
       ) : tab === "offers" ? (
         <OffersTab stallId={stallId} stallName={currentStall?.name} />
       ) : (
@@ -1415,94 +1417,6 @@ function OwnerAnalyticsTab({ stallId, stallName }: { stallId: string | null; sta
             <BarChart data={data.comboPerformance.map((c) => ({ label: c.name, value: c.usageCount }))} />
           </>
         )}
-      </div>
-    </>
-  );
-}
-
-function AskAiPanel({
-  title,
-  subtitle,
-  suggestions,
-  disabled,
-  ask,
-}: {
-  title: string;
-  subtitle?: string;
-  suggestions: string[];
-  disabled?: boolean;
-  ask: (question: string) => Promise<{ answer: string }>;
-}) {
-  const [question, setQuestion] = useState("");
-  const [messages, setMessages] = useState<{ question: string; answer: string }[]>([]);
-  const [asking, setAsking] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function submit(q: string) {
-    const trimmed = q.trim();
-    if (!trimmed || asking) return;
-    setAsking(true);
-    setError(null);
-    setQuestion("");
-    try {
-      const { answer } = await ask(trimmed);
-      setMessages((prev) => [...prev, { question: trimmed, answer }]);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not get an answer — please try again.");
-    } finally {
-      setAsking(false);
-    }
-  }
-
-  return (
-    <>
-      <div className="page-hero">
-        <PageHead title={title} subtitle={subtitle} />
-      </div>
-
-      <div className="card" style={{ marginBottom: "1rem" }}>
-        <div className="row" style={{ gap: "0.5rem", flexWrap: "wrap" }}>
-          {suggestions.map((s) => (
-            <button key={s} className="ghost small" disabled={disabled || asking} onClick={() => submit(s)}>
-              {s}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {error && <div className="error-banner" role="alert">{error}</div>}
-
-      <div className="stack" style={{ marginBottom: "1rem" }}>
-        {messages.map((m, i) => (
-          <div key={i} className="card">
-            <div style={{ fontWeight: 600 }}>{m.question}</div>
-            <div className="muted" style={{ marginTop: "0.5rem", whiteSpace: "pre-wrap", lineHeight: 1.5 }}>
-              {m.answer}
-            </div>
-          </div>
-        ))}
-        {asking && (
-          <div className="card muted">
-            <span className="spinner" /> Thinking…
-          </div>
-        )}
-        {messages.length === 0 && !asking && (
-          <div className="card"><EmptyState icon={Bot} text="Ask a question above to get started." /></div>
-        )}
-      </div>
-
-      <div className="row" style={{ gap: "0.6rem" }}>
-        <input
-          value={question}
-          onChange={(e) => setQuestion(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && submit(question)}
-          placeholder="Ask a business question…"
-          disabled={disabled || asking}
-          style={{ flex: 1 }}
-        />
-        <button className="primary" onClick={() => submit(question)} disabled={disabled || asking || !question.trim()}>
-          Ask
-        </button>
       </div>
     </>
   );
