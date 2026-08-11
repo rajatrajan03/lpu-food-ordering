@@ -17,6 +17,7 @@ import {
   Moon,
   PauseCircle,
   Play,
+  Plus,
   Receipt,
   Search,
   Sparkles,
@@ -294,6 +295,7 @@ export default function AdminDashboard() {
         <StallsTab
           stalls={stalls}
           insights={insights}
+          categories={categories}
           onChanged={refreshAll}
           onToggleStatus={toggleStallStatus}
           onToggleNightOpen={toggleStallNightOpen}
@@ -1111,6 +1113,7 @@ function stallGradient(name: string) {
 function StallsTab({
   stalls,
   insights,
+  categories,
   onChanged,
   onToggleStatus,
   onToggleNightOpen,
@@ -1119,6 +1122,7 @@ function StallsTab({
 }: {
   stalls: Stall[] | null;
   insights: Record<string, StallInsight>;
+  categories: CanonicalCategory[];
   onChanged: () => void;
   onToggleStatus: (stall: Stall) => void;
   onToggleNightOpen: (stall: Stall) => void;
@@ -1128,6 +1132,7 @@ function StallsTab({
   const [query, setQuery] = useState("");
   const [view, setView] = useState<"grid" | "list">("grid");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [addStallOpen, setAddStallOpen] = useState(false);
   const selected = stalls?.find((s) => s.id === selectedId) ?? null;
 
   const filtered = useMemo(() => {
@@ -1166,6 +1171,9 @@ function StallsTab({
           />
         </div>
         <div className="row" style={{ gap: "0.5rem" }}>
+          <button className="primary small" onClick={() => setAddStallOpen(true)}>
+            <Plus size={14} strokeWidth={2.25} /> Add stall
+          </button>
           <button className="ghost small" onClick={() => onBulkStatus("paused")}>
             <PauseCircle size={14} strokeWidth={2} /> Pause all
           </button>
@@ -1268,12 +1276,26 @@ function StallsTab({
           <StallDetailPanel
             stall={selected}
             insight={insights[selected.id]}
+            categories={categories}
             onClose={() => setSelectedId(null)}
             onToggleStatus={() => onToggleStatus(selected)}
             onToggleNightOpen={() => onToggleNightOpen(selected)}
             onSaved={(updated) => {
               onSavedStall(updated);
               onChanged();
+            }}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {addStallOpen && (
+          <AddStallModal
+            onClose={() => setAddStallOpen(false)}
+            onCreated={(stall) => {
+              setAddStallOpen(false);
+              onChanged();
+              setSelectedId(stall.id);
             }}
           />
         )}
@@ -1373,9 +1395,80 @@ function StallCard({
   );
 }
 
+/** Small modal for creating a new stall — the only way stalls get added now that data no longer comes from a bulk sheet import. */
+function AddStallModal({ onClose, onCreated }: { onClose: () => void; onCreated: (stall: Stall) => void }) {
+  const [name, setName] = useState("");
+  const [block, setBlock] = useState("");
+  const [area, setArea] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function create() {
+    if (!name.trim() || !block.trim()) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const stall = await api<Stall>("/api/admin/stalls", {
+        method: "POST",
+        body: { name: name.trim(), block: block.trim(), area: area.trim() || undefined },
+      });
+      onCreated(stall);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not create the stall.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <>
+      <motion.div className="cmdk-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} />
+      <motion.div
+        className="menu-editor"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Add a new stall"
+        style={{ width: "min(420px, calc(100vw - 2rem))", maxHeight: "none" }}
+        initial={{ opacity: 0, y: 12, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 12, scale: 0.98 }}
+        transition={{ duration: 0.2, ease: "easeOut" }}
+      >
+        <div className="menu-editor-head">
+          <div style={{ fontWeight: 700, fontSize: "1.05rem" }}>Add a new stall</div>
+          <button className="ghost small" onClick={onClose} aria-label="Close"><X size={16} strokeWidth={2} /></button>
+        </div>
+        <div className="stack" style={{ padding: "1rem 1.3rem 1.3rem" }}>
+          {error && <div className="error-banner" role="alert">{error}</div>}
+          <div className="field">
+            <label>Stall name</label>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Chai Sutta Bar" autoFocus />
+          </div>
+          <div className="field">
+            <label>Block</label>
+            <input value={block} onChange={(e) => setBlock(e.target.value)} placeholder="e.g. CSE Block" />
+          </div>
+          <div className="field">
+            <label>Area (optional)</label>
+            <input value={area} onChange={(e) => setArea(e.target.value)} placeholder="e.g. Boys Hostel" />
+          </div>
+          <button className="primary" disabled={saving || !name.trim() || !block.trim()} onClick={create}>
+            {saving && <span className="spinner" />}
+            {saving ? "Creating…" : "Create stall"}
+          </button>
+          <div className="muted" style={{ fontSize: "0.8rem" }}>
+            After creating it, use "Manage menu" to add items — each one picks a category right there, so there's nothing left to review later.
+          </div>
+        </div>
+      </motion.div>
+    </>
+  );
+}
+
 function StallDetailPanel({
   stall,
   insight,
+  categories,
   onClose,
   onToggleStatus,
   onToggleNightOpen,
@@ -1383,6 +1476,7 @@ function StallDetailPanel({
 }: {
   stall: Stall;
   insight: StallInsight | undefined;
+  categories: CanonicalCategory[];
   onClose: () => void;
   onToggleStatus: () => void;
   onToggleNightOpen: () => void;
@@ -1566,7 +1660,9 @@ function StallDetailPanel({
       </motion.div>
 
       <AnimatePresence>
-        {menuOpen && <MenuEditorModal stallId={stall.id} stallName={stall.name} onClose={() => setMenuOpen(false)} />}
+        {menuOpen && (
+          <MenuEditorModal stallId={stall.id} stallName={stall.name} categories={categories} onClose={() => setMenuOpen(false)} />
+        )}
       </AnimatePresence>
     </>
   );
@@ -1586,14 +1682,25 @@ interface MenuItemRow {
   basePrice: string;
   isVeg: boolean | null;
   available: boolean;
-  category: { id: string; rawLabel: string } | null;
+  category: { id: string; rawLabel: string; canonicalCategoryId: string | null } | null;
   variants: ItemVariant[];
 }
 
-function MenuEditorModal({ stallId, stallName, onClose }: { stallId: string; stallName: string; onClose: () => void }) {
+function MenuEditorModal({
+  stallId,
+  stallName,
+  categories,
+  onClose,
+}: {
+  stallId: string;
+  stallName: string;
+  categories: CanonicalCategory[];
+  onClose: () => void;
+}) {
   const [items, setItems] = useState<MenuItemRow[] | null>(null);
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
 
   useEffect(() => {
     api<MenuItemRow[]>(`/api/admin/stalls/${stallId}/items`)
@@ -1608,19 +1715,44 @@ function MenuEditorModal({ stallId, stallName, onClose }: { stallId: string; sta
     return items.filter((i) => i.name.toLowerCase().includes(q) || i.category?.rawLabel.toLowerCase().includes(q));
   }, [items, query]);
 
-  async function patchItem(itemId: string, patch: Partial<Pick<MenuItemRow, "available" | "isVeg" | "basePrice">>) {
+  async function patchItem(
+    itemId: string,
+    patch: Partial<Pick<MenuItemRow, "available" | "isVeg" | "basePrice">> & { canonicalCategoryId?: string },
+  ) {
     if (!items) return;
     const prev = items;
-    setItems(items.map((i) => (i.id === itemId ? { ...i, ...patch } : i)));
+    const { canonicalCategoryId, ...rest } = patch;
+    setItems(
+      items.map((i) =>
+        i.id === itemId
+          ? {
+              ...i,
+              ...rest,
+              ...(canonicalCategoryId
+                ? { category: { id: i.category?.id ?? "", rawLabel: categories.find((c) => c.id === canonicalCategoryId)?.name ?? "", canonicalCategoryId } }
+                : {}),
+            }
+          : i,
+      ),
+    );
     try {
       await api(`/api/admin/items/${itemId}`, {
         method: "PATCH",
-        body: "basePrice" in patch ? { basePrice: Number(patch.basePrice) } : patch,
+        body: "basePrice" in rest ? { ...rest, basePrice: Number(rest.basePrice), canonicalCategoryId } : { ...rest, canonicalCategoryId },
       });
     } catch (err) {
       setItems(prev);
       setError(err instanceof Error ? err.message : "Could not save that change.");
     }
+  }
+
+  async function addItem(draft: { name: string; basePrice: number; isVeg: boolean | null; canonicalCategoryId: string }) {
+    const created = await api<{ id: string; name: string; basePrice: string; isVeg: boolean | null; available: boolean; category: MenuItemRow["category"] }>(
+      `/api/admin/stalls/${stallId}/items`,
+      { method: "POST", body: { name: draft.name, basePrice: draft.basePrice, isVeg: draft.isVeg ?? undefined, canonicalCategoryId: draft.canonicalCategoryId } },
+    );
+    setItems((prev) => [{ ...created, description: null, variants: [] }, ...(prev ?? [])]);
+    setAddOpen(false);
   }
 
   return (
@@ -1648,10 +1780,15 @@ function MenuEditorModal({ stallId, stallName, onClose }: { stallId: string; sta
             <div style={{ fontWeight: 700, fontSize: "1.05rem" }}>{stallName} — menu</div>
             <div className="muted">{items ? `${items.length} items` : "Loading…"}</div>
           </div>
+          <button className={addOpen ? "small active" : "ghost small"} onClick={() => setAddOpen((v) => !v)}>
+            <Plus size={14} strokeWidth={2.25} /> Add item
+          </button>
           <button className="ghost small" onClick={onClose} aria-label="Close">
             <X size={16} strokeWidth={2} />
           </button>
         </div>
+
+        {addOpen && <AddItemForm categories={categories} onAdd={addItem} onCancel={() => setAddOpen(false)} />}
 
         <div className="search-wrap" style={{ margin: "0.9rem 1.3rem 0" }}>
           <span className="search-icon"><Search size={15} strokeWidth={2} /></span>
@@ -1683,7 +1820,18 @@ function MenuEditorModal({ stallId, stallName, onClose }: { stallId: string; sta
             <div key={item.id} className={`menu-item-row${item.available ? "" : " unavailable"}`}>
               <div className="menu-item-main">
                 <div className="menu-item-name">{item.name}</div>
-                {item.category && <span className="chip">{item.category.rawLabel}</span>}
+                <select
+                  aria-label={`Category for ${item.name}`}
+                  className="inline-select"
+                  style={{ minWidth: 0, fontSize: "0.78rem", padding: "0.2rem 1.6rem 0.2rem 0.5rem" }}
+                  value={item.category?.canonicalCategoryId ?? ""}
+                  onChange={(e) => patchItem(item.id, { canonicalCategoryId: e.target.value })}
+                >
+                  <option value="" disabled>{item.category?.rawLabel ?? "Uncategorized"}</option>
+                  {categories.map((c) => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
               </div>
               <div className="menu-item-controls">
                 <button
@@ -1715,6 +1863,84 @@ function MenuEditorModal({ stallId, stallName, onClose }: { stallId: string; sta
         </div>
       </motion.div>
     </>
+  );
+}
+
+/** Inline "add item" row shown at the top of the menu editor — category is required, not an afterthought, so nothing added this way ever lands in the review queue. */
+function AddItemForm({
+  categories,
+  onAdd,
+  onCancel,
+}: {
+  categories: CanonicalCategory[];
+  onAdd: (draft: { name: string; basePrice: number; isVeg: boolean | null; canonicalCategoryId: string }) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [price, setPrice] = useState("");
+  const [isVeg, setIsVeg] = useState<boolean | null>(null);
+  const [categoryId, setCategoryId] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const priceNum = Number(price);
+  const valid = name.trim().length > 0 && price.trim().length > 0 && Number.isFinite(priceNum) && priceNum >= 0 && categoryId !== "";
+
+  async function submit() {
+    if (!valid) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await onAdd({ name: name.trim(), basePrice: priceNum, isVeg, canonicalCategoryId: categoryId });
+      setName("");
+      setPrice("");
+      setIsVeg(null);
+      setCategoryId("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not add that item.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="card" style={{ margin: "0.9rem 1.3rem 0" }}>
+      {error && <div className="error-banner" role="alert">{error}</div>}
+      <div className="row" style={{ gap: "0.6rem", flexWrap: "wrap" }}>
+        <input
+          style={{ flex: "2 1 160px" }}
+          placeholder="Item name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          autoFocus
+        />
+        <input
+          style={{ flex: "1 1 90px" }}
+          type="number"
+          placeholder="Price ₹"
+          value={price}
+          onChange={(e) => setPrice(e.target.value)}
+        />
+        <select style={{ flex: "1 1 110px" }} value={isVeg === null ? "" : isVeg ? "veg" : "nonveg"} onChange={(e) => setIsVeg(e.target.value === "" ? null : e.target.value === "veg")}>
+          <option value="">Veg/Non-veg</option>
+          <option value="veg">Veg</option>
+          <option value="nonveg">Non-veg</option>
+        </select>
+        <select style={{ flex: "1 1 160px" }} value={categoryId} onChange={(e) => setCategoryId(e.target.value)} aria-label="Category">
+          <option value="" disabled>Category</option>
+          {categories.map((c) => (
+            <option key={c.id} value={c.id}>{c.name}</option>
+          ))}
+        </select>
+      </div>
+      <div className="row" style={{ gap: "0.5rem", marginTop: "0.7rem" }}>
+        <button className="primary small" disabled={!valid || saving} onClick={submit}>
+          {saving && <span className="spinner" />}
+          {saving ? "Adding…" : "Add item"}
+        </button>
+        <button className="ghost small" onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
   );
 }
 

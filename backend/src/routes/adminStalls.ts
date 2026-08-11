@@ -158,6 +158,23 @@ adminRouter.get(
   }),
 );
 
+const createStallSchema = z.object({
+  name: z.string().min(1),
+  block: z.string().min(1),
+  area: z.string().optional(),
+});
+
+adminRouter.post(
+  "/stalls",
+  asyncHandler(async (req, res) => {
+    const parsed = createStallSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
+    const stall = await prisma.stall.create({ data: parsed.data, include: { owners: true } });
+    auditLog("admin.stall_created", { adminId: req.auth!.id, stallId: stall.id });
+    res.status(201).json(stall);
+  }),
+);
+
 const updateStallSchema = z.object({
   name: z.string().optional(),
   status: z.enum(["active", "paused"]).optional(),
@@ -235,6 +252,28 @@ adminRouter.post(
   }),
 );
 
+// Finds (or creates) the stall's own MenuCategory bucket for a canonical
+// category — items are always stored against a per-stall MenuCategory row,
+// never the canonical category directly, so adding an item or recategorizing
+// one from the dashboard has to resolve/create that row the same way the
+// bulk-import category mapper and the one-off item-classification pass did.
+async function resolveStallCategory(stallId: string, canonicalCategoryId: string): Promise<string> {
+  const existing = await prisma.menuCategory.findFirst({
+    where: { stallId, canonicalCategoryId },
+    select: { id: true },
+  });
+  if (existing) return existing.id;
+
+  const canonical = await prisma.canonicalCategory.findUnique({ where: { id: canonicalCategoryId } });
+  if (!canonical) throw new Error("Unknown category.");
+  const created = await prisma.menuCategory.upsert({
+    where: { stallId_rawLabel: { stallId, rawLabel: canonical.name } },
+    update: { canonicalCategoryId },
+    create: { stallId, rawLabel: canonical.name, canonicalCategoryId },
+  });
+  return created.id;
+}
+
 // ---- Canonical categories (the curated taxonomy) ----
 
 adminRouter.get(
@@ -295,6 +334,38 @@ adminRouter.get(
   }),
 );
 
+const createItemSchema = z.object({
+  name: z.string().min(1),
+  basePrice: z.number().min(0),
+  isVeg: z.boolean().optional(),
+  // Required, not optional — the whole point of adding items straight from
+  // the dashboard (rather than a bulk sheet import with no category column)
+  // is that whoever's entering the item already knows what it is, so there's
+  // never a "review this later" backlog for stalls onboarded this way.
+  canonicalCategoryId: z.string().min(1),
+});
+
+adminRouter.post(
+  "/stalls/:stallId/items",
+  asyncHandler(async (req, res) => {
+    const parsed = createItemSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
+    const { name, basePrice, isVeg, canonicalCategoryId } = parsed.data;
+    let categoryId: string;
+    try {
+      categoryId = await resolveStallCategory(req.params.stallId, canonicalCategoryId);
+    } catch {
+      return res.status(400).json({ error: "Unknown category." });
+    }
+    const item = await prisma.menuItem.create({
+      data: { stallId: req.params.stallId, name, basePrice, isVeg, categoryId },
+      include: { category: true },
+    });
+    auditLog("admin.menu_item_created", { adminId: req.auth!.id, itemId: item.id, stallId: req.params.stallId });
+    res.status(201).json(item);
+  }),
+);
+
 const updateItemSchema = z.object({
   name: z.string().optional(),
   description: z.string().optional(),
@@ -302,6 +373,7 @@ const updateItemSchema = z.object({
   isVeg: z.boolean().optional(),
   imageUrl: z.string().optional(),
   available: z.boolean().optional(),
+  canonicalCategoryId: z.string().optional(),
 });
 
 adminRouter.patch(
@@ -309,7 +381,17 @@ adminRouter.patch(
   asyncHandler(async (req, res) => {
     const parsed = updateItemSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
-    const item = await prisma.menuItem.update({ where: { id: req.params.itemId }, data: parsed.data });
+    const { canonicalCategoryId, ...rest } = parsed.data;
+    const data: Record<string, unknown> = { ...rest };
+    if (canonicalCategoryId) {
+      const existingItem = await prisma.menuItem.findUniqueOrThrow({ where: { id: req.params.itemId }, select: { stallId: true } });
+      try {
+        data.categoryId = await resolveStallCategory(existingItem.stallId, canonicalCategoryId);
+      } catch {
+        return res.status(400).json({ error: "Unknown category." });
+      }
+    }
+    const item = await prisma.menuItem.update({ where: { id: req.params.itemId }, data, include: { category: true } });
     auditLog("admin.menu_item_updated", { adminId: req.auth!.id, itemId: item.id, changes: parsed.data });
     res.json(item);
   }),
