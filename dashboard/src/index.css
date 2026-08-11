@@ -268,11 +268,21 @@ label { font-size: 0.82rem; font-weight: 600; color: var(--muted); display: bloc
 .brand-text { font-size: 0.94rem; font-weight: 700; line-height: 1.2; }
 .brand-sub { font-size: 0.72rem; color: var(--muted); font-weight: 500; }
 
-.topnav-nav { display: flex; align-items: center; gap: 0.25rem; flex: 1; min-width: 0; overflow-x: auto; }
+.topnav-nav {
+  display: flex; align-items: center; gap: 0.1rem; flex: 1; min-width: 0;
+  overflow-x: auto;
+  /* Scrolls the same as before when there are more items than fit, but the
+     visible native scrollbar track under the nav read as a stray UI element
+     rather than part of the design — hidden here, with a soft edge fade
+     standing in as the "there's more, scroll me" affordance instead. */
+  scrollbar-width: none;
+  mask-image: linear-gradient(to right, transparent 0, black 14px, black calc(100% - 14px), transparent 100%);
+}
+.topnav-nav::-webkit-scrollbar { display: none; }
 .topnav-nav-item {
-  display: flex; align-items: center; gap: 0.45rem;
-  padding: 0.5rem 0.85rem; border-radius: 8px;
-  color: var(--muted); font-size: 0.85rem; font-weight: 600;
+  display: flex; align-items: center; gap: 0.4rem;
+  padding: 0.5rem 0.65rem; border-radius: 8px;
+  color: var(--muted); font-size: 0.83rem; font-weight: 600;
   border: none; background: transparent; box-shadow: none;
   white-space: nowrap; flex-shrink: 0;
 }
