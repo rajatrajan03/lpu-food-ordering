@@ -171,7 +171,10 @@ button.primary {
 }
 button.primary:hover:not(:disabled) { box-shadow: 0 6px 18px rgba(124, 58, 237, 0.38); transform: translateY(-1px); }
 button.secondary { background: var(--success); color: white; border-color: var(--success); }
-button.secondary:hover:not(:disabled) { background: #0c8449; border-color: #0c8449; }
+button.secondary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--success) 80%, black);
+  border-color: color-mix(in srgb, var(--success) 80%, black);
+}
 button.danger { background: var(--danger); color: white; border-color: var(--danger); }
 button.ghost { background: transparent; border-color: transparent; color: var(--muted); font-weight: 500; box-shadow: none; }
 button.ghost:hover:not(:disabled) { background: var(--line); color: var(--ink); transform: none; box-shadow: none; }
@@ -693,7 +696,7 @@ label { font-size: 0.82rem; font-weight: 600; color: var(--muted); display: bloc
 .error-banner {
   background: var(--danger-soft); color: var(--danger);
   border-radius: 10px; padding: 0.65rem 0.95rem; font-size: 0.88rem; margin-bottom: 1rem;
-  border: 1px solid rgba(215, 55, 63, 0.15);
+  border: 1px solid color-mix(in srgb, var(--danger) 15%, transparent);
 }
 
 /* ---- Search ---- */
@@ -816,7 +819,9 @@ select.inline-select { width: auto; min-width: 170px; padding: 0.4rem 0.6rem; fo
 }
 .empty-state .icon { display: flex; justify-content: center; margin-bottom: 0.6rem; opacity: 0.5; color: var(--faint); }
 .skeleton {
-  background: linear-gradient(90deg, var(--line) 25%, #f2f3f5 37%, var(--line) 63%);
+  /* Theme-aware shimmer — a hardcoded light-gray highlight here used to flash
+     visibly out of place against dark-theme panels every time a page loaded. */
+  background: linear-gradient(90deg, var(--line) 25%, var(--line-strong) 37%, var(--line) 63%);
   background-size: 400% 100%;
   animation: shimmer 1.4s ease infinite;
   border-radius: 6px;
