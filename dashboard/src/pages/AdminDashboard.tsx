@@ -24,7 +24,6 @@ import {
   Star,
   Store,
   Tag,
-  Tags,
   Timer,
   TrendingUp,
   UserX,
@@ -58,12 +57,6 @@ interface StallInsight {
 interface CanonicalCategory {
   id: string;
   name: string;
-}
-
-interface UnmappedCategory {
-  id: string;
-  rawLabel: string;
-  stall: { name: string; block: string };
 }
 
 interface Overview {
@@ -107,12 +100,11 @@ const NAV_ITEMS: NavItem[] = [
   { key: "offers", label: "Offers", icon: Tag },
   { key: "analytics", label: "Analytics", icon: BarChart3 },
   { key: "forecast", label: "AI Forecast", icon: Sparkles },
-  { key: "categories", label: "Category review", icon: Tags },
   { key: "owners", label: "Assign owners", icon: KeyRound },
   { key: "students", label: "Students", icon: Users },
 ];
 
-type Tab = "overview" | "stalls" | "offers" | "analytics" | "forecast" | "categories" | "owners" | "students";
+type Tab = "overview" | "stalls" | "offers" | "analytics" | "forecast" | "owners" | "students";
 type Period = "today" | "week" | "month" | "custom";
 
 const ADMIN_AI_SUGGESTIONS = [
@@ -178,7 +170,6 @@ export default function AdminDashboard() {
   const [tab, setTab] = useState<Tab>("overview");
   const [stalls, setStalls] = useState<Stall[] | null>(null);
   const [categories, setCategories] = useState<CanonicalCategory[]>([]);
-  const [unmapped, setUnmapped] = useState<UnmappedCategory[] | null>(null);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [activity, setActivity] = useState<ActivityItem[] | null>(null);
   const [rankings, setRankings] = useState<StallRanking[] | null>(null);
@@ -201,7 +192,6 @@ export default function AdminDashboard() {
     setError(null);
     api<Stall[]>("/api/admin/stalls").then(setStalls).catch((e) => setError(e.message));
     api<CanonicalCategory[]>("/api/admin/categories").then(setCategories).catch((e) => setError(e.message));
-    api<UnmappedCategory[]>("/api/admin/menu-categories/unmapped").then(setUnmapped).catch((e) => setError(e.message));
     api<Overview>("/api/admin/overview").then(setOverview).catch((e) => setError(e.message));
     api<ActivityItem[]>("/api/admin/activity?limit=12").then(setActivity).catch((e) => setError(e.message));
     api<Record<string, StallInsight>>("/api/admin/stalls/insights").then(setInsights).catch((e) => setError(e.message));
@@ -213,21 +203,6 @@ export default function AdminDashboard() {
     const interval = setInterval(refreshAll, 20_000);
     return () => clearInterval(interval);
   }, [refreshAll]);
-
-  async function assignCategory(menuCategoryId: string, canonicalCategoryId: string) {
-    if (!canonicalCategoryId || !unmapped) return;
-    const removed = unmapped.find((c) => c.id === menuCategoryId);
-    setUnmapped(unmapped.filter((c) => c.id !== menuCategoryId));
-    try {
-      await api(`/api/admin/menu-categories/${menuCategoryId}`, {
-        method: "PATCH",
-        body: { canonicalCategoryId },
-      });
-    } catch (err) {
-      if (removed) setUnmapped((prev) => [...(prev ?? []), removed]);
-      setError(err instanceof Error ? err.message : "Could not assign category — restored to the queue.");
-    }
-  }
 
   function setStallStatusLocally(stallId: string, status: string) {
     setStalls((prev) => prev?.map((s) => (s.id === stallId ? { ...s, status } : s)) ?? null);
@@ -268,13 +243,9 @@ export default function AdminDashboard() {
     }
   }
 
-  const navItems = NAV_ITEMS.map((item) =>
-    item.key === "categories" ? { ...item, badge: unmapped?.length ?? 0 } : item,
-  );
-
   return (
     <Shell
-      navItems={navItems}
+      navItems={NAV_ITEMS}
       activeKey={tab}
       onNavigate={(k) => setTab(k as Tab)}
       roleLabel="Super Admin"
@@ -304,9 +275,6 @@ export default function AdminDashboard() {
             setStalls((prev) => prev?.map((s) => (s.id === updated.id ? { ...s, ...updated } : s)) ?? null)
           }
         />
-      )}
-      {tab === "categories" && (
-        <CategoriesTab unmapped={unmapped} categories={categories} onAssign={assignCategory} />
       )}
       {tab === "owners" && <AssignOwnerForm stalls={stalls ?? []} onAssigned={refreshAll} />}
       {tab === "students" && <StudentsTab students={students} total={studentTotal} />}
@@ -872,12 +840,6 @@ function OverviewTab({
           text: `${overview.pausedStalls} stall${overview.pausedStalls === 1 ? "" : "s"} currently paused`,
           count: overview.pausedStalls,
           onClick: () => onNavigate("stalls"),
-        },
-        overview.pendingCategoryReviews > 0 && {
-          icon: Tags,
-          text: `${overview.pendingCategoryReviews} categor${overview.pendingCategoryReviews === 1 ? "y" : "ies"} awaiting review`,
-          count: overview.pendingCategoryReviews,
-          onClick: () => onNavigate("categories"),
         },
       ].filter(Boolean as unknown as (v: unknown) => v is { icon: typeof AlertTriangle; text: string; count: number; onClick?: () => void })
     : [];
@@ -1941,75 +1903,6 @@ function AddItemForm({
         <button className="ghost small" onClick={onCancel}>Cancel</button>
       </div>
     </div>
-  );
-}
-
-function CategoriesTab({
-  unmapped,
-  categories,
-  onAssign,
-}: {
-  unmapped: UnmappedCategory[] | null;
-  categories: CanonicalCategory[];
-  onAssign: (menuCategoryId: string, canonicalCategoryId: string) => void;
-}) {
-  return (
-    <>
-      <PageHead
-        title="Category review"
-        subtitle="These raw category labels didn't match the default taxonomy — assign each to a real category so students can browse by it."
-      />
-
-      <div className="card" style={{ padding: 0 }}>
-        {unmapped === null ? (
-          <div style={{ padding: "1.1rem 1.3rem" }} className="stack">
-            <Skeleton height={18} />
-            <Skeleton height={18} />
-            <Skeleton height={18} />
-          </div>
-        ) : unmapped.length === 0 ? (
-          <EmptyState icon={CheckCircle2} text="Nothing left to review — every category is mapped." />
-        ) : (
-          <div className="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>Raw label</th>
-                  <th>Stall</th>
-                  <th>Assign to</th>
-                </tr>
-              </thead>
-              <tbody>
-                {unmapped.map((c) => (
-                  <tr key={c.id}>
-                    <td style={{ fontWeight: 600 }}>{c.rawLabel}</td>
-                    <td className="muted">
-                      {c.stall.name} ({c.stall.block})
-                    </td>
-                    <td>
-                      <select
-                        className="inline-select"
-                        defaultValue=""
-                        onChange={(e) => onAssign(c.id, e.target.value)}
-                      >
-                        <option value="" disabled>
-                          Choose category…
-                        </option>
-                        {categories.map((cat) => (
-                          <option key={cat.id} value={cat.id}>
-                            {cat.name}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-    </>
   );
 }
 
