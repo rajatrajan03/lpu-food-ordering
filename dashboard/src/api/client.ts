@@ -15,16 +15,34 @@ export function clearAuth() {
   localStorage.removeItem("auth");
 }
 
-async function request<T>(path: string, options: { method?: string; body?: unknown }): Promise<T> {
+// Without this, a genuinely hung request (backend cold-starting on Render's
+// free tier, a dropped connection) left the caller's loading state spinning
+// forever with no error and no way out — the request just never settles.
+const DEFAULT_TIMEOUT_MS = 30_000;
+
+async function request<T>(path: string, options: { method?: string; body?: unknown; timeoutMs?: number }): Promise<T> {
   const auth = getAuth();
-  const res = await fetch(`${API_BASE}${path}`, {
-    method: options.method ?? "GET",
-    headers: {
-      "Content-Type": "application/json",
-      ...(auth ? { Authorization: `Bearer ${auth.token}` } : {}),
-    },
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      method: options.method ?? "GET",
+      headers: {
+        "Content-Type": "application/json",
+        ...(auth ? { Authorization: `Bearer ${auth.token}` } : {}),
+      },
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error("The server is taking longer than expected to respond — please try again.");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
   const data = await res.json().catch(() => null);
   if (!res.ok) {
     throw new Error(data?.error ?? `Request failed (${res.status})`);
@@ -38,7 +56,7 @@ async function request<T>(path: string, options: { method?: string; body?: unkno
 // retried here since re-sending one that actually succeeded could double it up.
 export async function api<T = unknown>(
   path: string,
-  options: { method?: string; body?: unknown } = {},
+  options: { method?: string; body?: unknown; timeoutMs?: number } = {},
 ): Promise<T> {
   const isGet = !options.method || options.method === "GET";
   try {

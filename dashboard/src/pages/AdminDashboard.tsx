@@ -371,7 +371,10 @@ function AdminForecastTab() {
     setLoading(true);
     setError(null);
     try {
-      setForecast(await api<AdminForecast>("/api/admin/forecast"));
+      // Longer timeout than the client default — this endpoint chains a
+      // possible Render free-tier cold start with a Gemini call, both of
+      // which are genuinely slow sometimes, not stuck.
+      setForecast(await api<AdminForecast>("/api/admin/forecast", { timeoutMs: 60_000 }));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not generate a forecast.");
     } finally {
@@ -396,6 +399,10 @@ function AdminForecastTab() {
 
       {loading && !forecast && (
         <div className="card stack">
+          <span className="row muted" style={{ gap: "0.5rem" }}>
+            <span className="spinner" style={{ borderColor: "var(--line-strong)", borderTopColor: "var(--accent)" }} />
+            Generating your forecast — this can take up to a minute the first time.
+          </span>
           <Skeleton height={20} />
           <Skeleton height={20} width="70%" />
         </div>
