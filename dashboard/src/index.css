@@ -668,7 +668,13 @@ label { font-size: 0.82rem; font-weight: 600; color: var(--muted); display: bloc
 .detail-metric .metric-value { font-size: 1.1rem; font-weight: 750; }
 .detail-metric .metric-label { font-size: 0.7rem; color: var(--muted); margin-top: 0.1rem; }
 
-.activity-list { list-style: none; margin: 0.3rem 0 0; padding: 0; display: flex; flex-direction: column; }
+.activity-list {
+  list-style: none; margin: 0.3rem 0 0; padding: 0; display: flex; flex-direction: column;
+  /* Without a cap this just grew as tall as however many items the API
+     returned, towering over every other card in the overview grid next to
+     it instead of reading as one contained panel. */
+  max-height: 420px; overflow-y: auto;
+}
 .activity-row { display: flex; gap: 0.7rem; padding: 0.6rem 0; }
 .activity-row:not(:last-child) { border-bottom: 1px dashed var(--line); }
 .activity-dot { width: 8px; height: 8px; border-radius: 999px; background: var(--signal-idle); margin-top: 0.42rem; flex-shrink: 0; color: var(--signal-idle); }
