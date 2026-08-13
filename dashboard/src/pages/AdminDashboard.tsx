@@ -992,7 +992,7 @@ function OverviewTab({
           </div>
         </div>
 
-        <div className="card">
+        <div className="card overview-activity-card">
           <div className="card-title">Live activity</div>
           {!activity ? (
             <div className="stack" style={{ marginTop: "0.5rem" }}>

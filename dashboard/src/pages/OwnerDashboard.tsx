@@ -523,44 +523,48 @@ export default function OwnerDashboard() {
 
       {isToday ? (
       <>
-      <div className="stat-row">
-        <StatCard
-          icon={Clock3}
-          label="Needs attention"
-          tone="warn"
-          value={orders ? needsAttention.length : <Skeleton width={32} height={28} />}
-        />
-        <StatCard
-          icon={Flame}
-          label="Preparing"
-          tone="accent"
-          value={orders ? preparing.length : <Skeleton width={32} height={28} />}
-        />
-        <StatCard
-          icon={BellRing}
-          label="Ready for pickup"
-          tone="success"
-          value={orders ? ready.length : <Skeleton width={32} height={28} />}
-        />
-        <StatCard
-          icon={Timer}
-          label="Next pickup"
-          tone="info"
-          value={nextPickup ? nextPickup.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—"}
-        />
-        <StatCard
-          icon={IndianRupee}
-          label="Revenue today"
-          tone="success"
-          value={<AnimatedNumber value={revenueToday} prefix="₹" />}
-        />
-        <StatCard
-          icon={ListChecks}
-          label="Completed today"
-          tone="accent"
-          value={completedToday ? completedToday.length : <Skeleton width={32} height={28} />}
-          sub={avgPrepMinutes != null ? `~${avgPrepMinutes}m avg` : undefined}
-        />
+      <div className="overview-hero">
+        <div className="overview-hero-headline">
+          <div className="overview-hero-label"><IndianRupee size={15} strokeWidth={2.25} /> Revenue today</div>
+          <div className="overview-hero-value"><AnimatedNumber value={revenueToday} prefix="₹" /></div>
+        </div>
+        <div className="overview-hero-substats">
+          <div className="overview-hero-substat">
+            <Clock3 size={16} strokeWidth={2} />
+            <div>
+              <div className="value">{orders ? needsAttention.length : <Skeleton width={24} height={18} />}</div>
+              <div className="label">Needs attention</div>
+            </div>
+          </div>
+          <div className="overview-hero-substat">
+            <Flame size={16} strokeWidth={2} />
+            <div>
+              <div className="value">{orders ? preparing.length : <Skeleton width={24} height={18} />}</div>
+              <div className="label">Preparing</div>
+            </div>
+          </div>
+          <div className="overview-hero-substat">
+            <BellRing size={16} strokeWidth={2} />
+            <div>
+              <div className="value">{orders ? ready.length : <Skeleton width={24} height={18} />}</div>
+              <div className="label">Ready for pickup</div>
+            </div>
+          </div>
+          <div className="overview-hero-substat">
+            <Timer size={16} strokeWidth={2} />
+            <div>
+              <div className="value">{nextPickup ? nextPickup.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—"}</div>
+              <div className="label">Next pickup</div>
+            </div>
+          </div>
+          <div className="overview-hero-substat">
+            <ListChecks size={16} strokeWidth={2} />
+            <div>
+              <div className="value">{completedToday ? completedToday.length : <Skeleton width={24} height={18} />}</div>
+              <div className="label">Completed{avgPrepMinutes != null ? ` · ~${avgPrepMinutes}m avg` : ""}</div>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div className="section-label">Order SLA &amp; Accountability</div>
