@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Activity,
@@ -829,6 +829,31 @@ function OverviewTab({
   rankings: StallRanking[] | null;
   onNavigate: (tab: Tab) => void;
 }) {
+  // CSS grid stretch alone can't cap the activity card to the left column's
+  // height when the activity list's own unclipped content is taller than
+  // the left column — grid auto-sizes the row to fit the tallest natural
+  // content first, so the "shorter" side never actually gets to constrain
+  // the taller one. Measuring the left column and pinning the right card's
+  // height to it (letting only the list inside scroll) is the only way to
+  // make the two bottoms line up regardless of which side has more content.
+  // Re-measures via useLayoutEffect (synchronous, keyed on the data that
+  // changes the left column's height) rather than a ResizeObserver — RO
+  // delivery is batched with the paint cycle, so it can go silent in a
+  // background/non-composited tab; getBoundingClientRect is layout-only
+  // and doesn't have that dependency.
+  const leftColRef = useRef<HTMLDivElement>(null);
+  const [rightColHeight, setRightColHeight] = useState<number | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (leftColRef.current) setRightColHeight(leftColRef.current.getBoundingClientRect().height);
+  }, [overview, rankings]);
+  useEffect(() => {
+    const onResize = () => {
+      if (leftColRef.current) setRightColHeight(leftColRef.current.getBoundingClientRect().height);
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
   const attentionItems = overview
     ? [
         overview.stuckOrders > 0 && {
@@ -920,7 +945,7 @@ function OverviewTab({
       )}
 
       <div className="overview-grid">
-        <div className="stack">
+        <div className="stack" ref={leftColRef}>
           <div className="card">
             <div className="card-title">Peak ordering hour</div>
             {!overview ? (
@@ -992,7 +1017,7 @@ function OverviewTab({
           </div>
         </div>
 
-        <div className="card overview-activity-card">
+        <div className="card overview-activity-card" style={rightColHeight ? { height: rightColHeight } : undefined}>
           <div className="card-title">Live activity</div>
           {!activity ? (
             <div className="stack" style={{ marginTop: "0.5rem" }}>

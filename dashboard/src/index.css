@@ -579,14 +579,17 @@ label { font-size: 0.82rem; font-weight: 600; color: var(--muted); display: bloc
 .stat-sub { color: var(--muted); }
 
 /* ---- Overview / operations center ---- */
-.overview-grid { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 1.4rem; align-items: stretch; }
-/* The right column used to be a single card sized to its own content,
-   independent of however tall the left stack of cards happened to be —
-   at any item count other than the one it was eyeballed against, the two
-   columns' bottoms landed at different heights and it read as unaligned.
-   Stretching the grid row and letting this card fill it (with only the
-   scrollable list inside shrinking to fit) keeps both columns' bottoms
-   flush regardless of how many cards or activity rows there are. */
+.overview-grid { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 1.4rem; align-items: start; }
+/* The right column (Live activity) used to be a single card sized to its
+   own unclipped content, independent of the left stack's height — grid's
+   row auto-sizing takes the max of both sides' natural content height, so
+   CSS alone can't cap one side to the other when the "shorter" side has
+   the taller natural content (e.g. 12 activity rows vs 4 stat cards).
+   OverviewTab measures the left column's rendered height via
+   ResizeObserver and sets it as this card's explicit height inline —
+   .activity-list's flex:1 + overflow-y:auto then does the actual clipping
+   inside that fixed height, so both columns' bottoms line up exactly no
+   matter which side has more content. */
 .overview-activity-card { display: flex; flex-direction: column; margin-bottom: 0; }
 .overview-activity-card .card-title { flex-shrink: 0; }
 @media (max-width: 980px) { .overview-grid { grid-template-columns: 1fr; } }
