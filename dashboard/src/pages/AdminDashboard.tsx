@@ -855,40 +855,38 @@ function OverviewTab({
     <>
       <PageHead title="Overview" subtitle="Campus food operations, today and right now." />
 
-      <div className="stat-row">
-        <StatCard
-          icon={Receipt}
-          label="Orders today"
-          tone="accent"
-          value={overview ? <AnimatedNumber value={overview.ordersToday} /> : <Skeleton width={40} height={28} />}
-        />
-        <StatCard
-          icon={IndianRupee}
-          label="Revenue today"
-          tone="success"
-          value={
-            overview ? <AnimatedNumber value={overview.revenueToday} prefix="₹" /> : <Skeleton width={60} height={28} />
-          }
-        />
-        <StatCard
-          icon={Store}
-          label="Active stalls"
-          tone="info"
-          value={overview ? <AnimatedNumber value={overview.activeStalls} /> : <Skeleton width={40} height={28} />}
-          sub={overview ? `${overview.pausedStalls} paused` : undefined}
-        />
-        <StatCard
-          icon={Timer}
-          label="Avg. fulfillment"
-          tone="warn"
-          value={
-            overview
-              ? overview.avgFulfillmentMinutes != null
-                ? `${overview.avgFulfillmentMinutes}m`
-                : "—"
-              : <Skeleton width={40} height={28} />
-          }
-        />
+      <div className="overview-hero">
+        <div className="overview-hero-headline">
+          <div className="overview-hero-label"><IndianRupee size={15} strokeWidth={2.25} /> Revenue today</div>
+          <div className="overview-hero-value">
+            {overview ? <AnimatedNumber value={overview.revenueToday} prefix="₹" /> : <Skeleton width={140} height={44} />}
+          </div>
+        </div>
+        <div className="overview-hero-substats">
+          <div className="overview-hero-substat">
+            <Receipt size={16} strokeWidth={2} />
+            <div>
+              <div className="value">{overview ? <AnimatedNumber value={overview.ordersToday} /> : <Skeleton width={30} height={18} />}</div>
+              <div className="label">Orders today</div>
+            </div>
+          </div>
+          <div className="overview-hero-substat">
+            <Store size={16} strokeWidth={2} />
+            <div>
+              <div className="value">{overview ? <AnimatedNumber value={overview.activeStalls} /> : <Skeleton width={30} height={18} />}</div>
+              <div className="label">Active stalls{overview ? ` · ${overview.pausedStalls} paused` : ""}</div>
+            </div>
+          </div>
+          <div className="overview-hero-substat">
+            <Timer size={16} strokeWidth={2} />
+            <div>
+              <div className="value">
+                {overview ? (overview.avgFulfillmentMinutes != null ? `${overview.avgFulfillmentMinutes}m` : "—") : <Skeleton width={30} height={18} />}
+              </div>
+              <div className="label">Avg. fulfillment</div>
+            </div>
+          </div>
+        </div>
       </div>
 
       {overview && attentionItems.length > 0 && (

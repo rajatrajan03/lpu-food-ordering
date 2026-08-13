@@ -503,6 +503,43 @@ label { font-size: 0.82rem; font-weight: 600; color: var(--muted); display: bloc
 }
 
 .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 1.4rem; }
+
+/* ---- Overview hero: one dominant headline number instead of N equal-weight
+   stat cards — the previous four-card row gave every metric identical
+   visual weight, so nothing actually read as "the" number to look at. ---- */
+.overview-hero {
+  position: relative; overflow: hidden;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1.5rem;
+  background: var(--accent-grad); border-radius: var(--radius-lg);
+  padding: 1.8rem 2rem; margin-bottom: 1.6rem;
+  box-shadow: 0 16px 40px -12px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.overview-hero::before {
+  content: ""; position: absolute; top: -50%; right: -6%; width: 280px; height: 280px;
+  border-radius: 50%; background: rgba(255,255,255,0.08); pointer-events: none;
+}
+.overview-hero-headline { position: relative; z-index: 1; color: white; }
+.overview-hero-label {
+  display: flex; align-items: center; gap: 0.4rem;
+  font-size: 0.85rem; font-weight: 600; color: rgba(255,255,255,0.82); margin-bottom: 0.5rem;
+}
+.overview-hero-value { font-size: 2.6rem; font-weight: 800; letter-spacing: -0.02em; line-height: 1; font-variant-numeric: tabular-nums; }
+.overview-hero-substats {
+  position: relative; z-index: 1;
+  display: flex; flex-wrap: wrap; gap: 1.6rem;
+  background: rgba(255,255,255,0.12); border-radius: var(--radius);
+  padding: 0.9rem 1.3rem;
+}
+.overview-hero-substat { display: flex; align-items: center; gap: 0.6rem; color: white; }
+.overview-hero-substat svg { flex-shrink: 0; opacity: 0.85; }
+.overview-hero-substat .value { font-size: 1.15rem; font-weight: 750; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.overview-hero-substat .label { font-size: 0.72rem; color: rgba(255,255,255,0.78); white-space: nowrap; }
+
+@media (max-width: 700px) {
+  .overview-hero { padding: 1.4rem 1.3rem; }
+  .overview-hero-value { font-size: 2rem; }
+  .overview-hero-substats { gap: 1rem; padding: 0.8rem 1rem; }
+}
 .stat-card {
   --tone: var(--accent);
   --tone-grad: var(--accent-grad);
@@ -542,7 +579,7 @@ label { font-size: 0.82rem; font-weight: 600; color: var(--muted); display: bloc
 .stat-sub { color: var(--muted); }
 
 /* ---- Overview / operations center ---- */
-.overview-grid { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 1rem; align-items: start; }
+.overview-grid { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 1.4rem; align-items: start; }
 @media (max-width: 980px) { .overview-grid { grid-template-columns: 1fr; } }
 
 .attention-panel { border-color: color-mix(in srgb, var(--signal-attention) 30%, var(--line)); }
